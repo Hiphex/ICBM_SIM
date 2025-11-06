@@ -1206,7 +1206,7 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
             line.set_data(xs[:upto], ys[:upto])
         return [icbm_line, *interceptor_lines.values(), *decoy_lines.values(), *intercept_markers]
 
-    FuncAnimation(
+    anim = FuncAnimation(
         fig,
         update,
         init_func=init,
@@ -1215,6 +1215,8 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
         blit=False,
         repeat=False,
     )
+    # Keep a reference so Matplotlib does not garbage collect the animation before show().
+    fig._animation = anim  # type: ignore[attr-defined]
     plt.tight_layout()
     plt.show()
 
