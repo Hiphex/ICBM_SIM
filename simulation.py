@@ -109,11 +109,18 @@ class InterceptorConfig:
     confusion_probability: float
     reacquisition_rate: float
     max_flight_time: float
+    depends_on: Optional[str] = None
+    dependency_grace_period: float = 0.0
+    salvo_count: int = 1
+    salvo_interval: float = 0.0
 
 
 @dataclass
 class InterceptorState:
     config: InterceptorConfig
+    salvo_index: int
+    label: str
+    planned_launch_time: float
     launched: bool = False
     expended: bool = False
     position: Optional[Vector] = None
@@ -130,6 +137,8 @@ class InterceptorState:
 @dataclass
 class InterceptorReport:
     name: str
+    config_name: str
+    salvo_index: int
     success: bool
     target_label: Optional[str]
     intercept_time: Optional[float]
@@ -189,6 +198,10 @@ def simulate_icbm_intercept(
     interceptor_site: Vector = (800_000.0, 0.0),
     interceptor_speed_cap: float = 5400.0,
     interceptor_launch_delay: float = 120.0,
+    gbi_salvo_count: int = 1,
+    gbi_salvo_interval: float = 0.0,
+    thaad_salvo_count: int = 1,
+    thaad_salvo_interval: float = 0.0,
     guidance_gain: float = 0.7,
     damping_gain: float = 0.05,
     intercept_distance: float = 300.0,
@@ -230,6 +243,8 @@ def simulate_icbm_intercept(
     * Optional mid-course decoy deployment with configurable seeker confusion
       probability and reacquisition rate, allowing Monte Carlo runs to capture
       false kills on decoys versus the primary warhead.
+    * Configurable interceptor salvos (count and spacing) so layered defenses can
+      fire parallel shots for higher kill probability.
     """
     if rng is None:
         rng = random.Random()
@@ -263,6 +278,11 @@ def simulate_icbm_intercept(
         running_angle += pitch_schedule[idx]
         cumulative_pitch_angles.append(running_angle)
 
+    normalized_gbi_salvo_count = max(1, int(gbi_salvo_count))
+    normalized_gbi_salvo_interval = max(0.0, gbi_salvo_interval)
+    normalized_thaad_salvo_count = max(1, int(thaad_salvo_count))
+    normalized_thaad_salvo_interval = max(0.0, thaad_salvo_interval)
+
     if interceptors is None:
         interceptors = [
             InterceptorConfig(
@@ -280,6 +300,10 @@ def simulate_icbm_intercept(
                 confusion_probability=max(0.0, min(1.0, decoy_confusion_probability * 0.7)),
                 reacquisition_rate=max(decoy_reacquisition_rate, 0.01),
                 max_flight_time=900.0,
+                depends_on=None,
+                dependency_grace_period=0.0,
+                salvo_count=normalized_gbi_salvo_count,
+                salvo_interval=normalized_gbi_salvo_interval,
             ),
             InterceptorConfig(
                 name="THAAD",
@@ -296,10 +320,28 @@ def simulate_icbm_intercept(
                 confusion_probability=max(0.0, min(1.0, decoy_confusion_probability * 0.9)),
                 reacquisition_rate=max(decoy_reacquisition_rate * 1.5, 0.02),
                 max_flight_time=450.0,
+                depends_on="GBI",
+                dependency_grace_period=180.0,
+                salvo_count=normalized_thaad_salvo_count,
+                salvo_interval=normalized_thaad_salvo_interval,
             ),
         ]
 
-    interceptor_states: List[InterceptorState] = [InterceptorState(config=cfg) for cfg in interceptors]
+    interceptor_states: List[InterceptorState] = []
+    for cfg in interceptors:
+        salvo_count = max(1, int(cfg.salvo_count))
+        interval = max(0.0, cfg.salvo_interval)
+        for salvo_index in range(salvo_count):
+            label = cfg.name if salvo_count == 1 else f"{cfg.name}#{salvo_index + 1}"
+            planned_launch_time = cfg.launch_delay + salvo_index * interval
+            interceptor_states.append(
+                InterceptorState(
+                    config=cfg,
+                    salvo_index=salvo_index,
+                    label=label,
+                    planned_launch_time=planned_launch_time,
+                )
+            )
 
     parameter_record: Dict[str, Any] = {
         "dt": dt,
@@ -310,6 +352,10 @@ def simulate_icbm_intercept(
         "interceptor_site": interceptor_site,
         "interceptor_speed_cap": interceptor_speed_cap,
         "interceptor_launch_delay": interceptor_launch_delay,
+        "gbi_salvo_count": normalized_gbi_salvo_count,
+        "gbi_salvo_interval": normalized_gbi_salvo_interval,
+        "thaad_salvo_count": normalized_thaad_salvo_count,
+        "thaad_salvo_interval": normalized_thaad_salvo_interval,
         "guidance_gain": guidance_gain,
         "damping_gain": damping_gain,
         "intercept_distance": intercept_distance,
@@ -348,6 +394,10 @@ def simulate_icbm_intercept(
                 "confusion_probability": cfg.confusion_probability,
                 "reacquisition_rate": cfg.reacquisition_rate,
                 "max_flight_time": cfg.max_flight_time,
+                "depends_on": cfg.depends_on,
+                "dependency_grace_period": cfg.dependency_grace_period,
+                "salvo_count": cfg.salvo_count,
+                "salvo_interval": cfg.salvo_interval,
             }
             for cfg in interceptors
         ],
@@ -512,7 +562,40 @@ def simulate_icbm_intercept(
             cfg = state.config
             if intercept_success:
                 continue
-            if time >= cfg.launch_delay and cfg.engage_altitude_min <= target_altitude <= cfg.engage_altitude_max:
+            dependency_ready = True
+            if cfg.depends_on:
+                # Delay launch until every interceptor in the dependency layer has failed
+                # or exceeded its grace window.
+                dependency_states = [
+                    s for s in interceptor_states if s.config.name == cfg.depends_on
+                ]
+                if dependency_states:
+                    if any(dep.success for dep in dependency_states):
+                        continue
+                    dependency_ready = True
+                    grace = max(cfg.dependency_grace_period, 0.0)
+                    for dep in dependency_states:
+                        if dep.expended and not dep.success:
+                            continue
+                        if dep.launched:
+                            if grace > 0.0 and dep.launch_time is not None:
+                                if time - dep.launch_time >= grace:
+                                    continue
+                            dependency_ready = False
+                            break
+                        else:
+                            if grace > 0.0 and time >= dep.planned_launch_time + grace:
+                                continue
+                            dependency_ready = False
+                            break
+                else:
+                    dependency_ready = True
+            if not dependency_ready:
+                continue
+            if (
+                time >= state.planned_launch_time
+                and cfg.engage_altitude_min <= target_altitude <= cfg.engage_altitude_max
+            ):
                 state.launched = True
                 state.position = cfg.site
                 state.velocity = (0.0, 0.0)
@@ -635,18 +718,22 @@ def simulate_icbm_intercept(
                 decoy_velocities[idx] = (decoy_velocities[idx][0], 0.0)
 
         interceptor_positions_map = {
-            state.config.name: state.position for state in interceptor_states
+            state.label: state.position for state in interceptor_states
         }
         interceptor_velocities_map = {
-            state.config.name: state.velocity for state in interceptor_states
+            state.label: state.velocity for state in interceptor_states
         }
 
         default_interceptor_position = None
         default_interceptor_velocity = None
         if interceptors:
-            default_name = interceptors[0].name
-            default_interceptor_position = interceptor_positions_map.get(default_name)
-            default_interceptor_velocity = interceptor_velocities_map.get(default_name)
+            default_label = next(
+                (state.label for state in interceptor_states if state.config is interceptors[0]),
+                None,
+            )
+            if default_label is not None:
+                default_interceptor_position = interceptor_positions_map.get(default_label)
+                default_interceptor_velocity = interceptor_velocities_map.get(default_label)
 
         samples.append(
             TrajectorySample(
@@ -676,8 +763,10 @@ def simulate_icbm_intercept(
     parameter_record["warhead_active_reference_area"] = active_reference_area
 
     interceptor_reports = {
-        state.config.name: InterceptorReport(
-            name=state.config.name,
+        state.label: InterceptorReport(
+            name=state.label,
+            config_name=state.config.name,
+            salvo_index=state.salvo_index,
             success=state.success,
             target_label=state.intercept_target_label,
             intercept_time=state.intercept_time,
@@ -747,6 +836,8 @@ def _result_to_entry(
         entry["intercept_position"] = list(entry["intercept_position"])
     entry["interceptors"] = {
         name: {
+            "config_name": report.config_name,
+            "salvo_index": report.salvo_index,
             "success": report.success,
             "target": report.target_label,
             "intercept_time": report.intercept_time,
@@ -812,6 +903,10 @@ def run_monte_carlo(
     speed_cap_base = base_kwargs.get("interceptor_speed_cap", 5000.0)
     noise_base = base_kwargs.get("guidance_noise_std_deg", 0.10)
     wind_base = base_kwargs.get("wind_velocity", (0.0, 0.0))
+    gbi_salvo_base = max(1, int(base_kwargs.get("gbi_salvo_count", 1)))
+    gbi_salvo_interval_base = max(0.0, base_kwargs.get("gbi_salvo_interval", 0.0))
+    thaad_salvo_base = max(1, int(base_kwargs.get("thaad_salvo_count", 1)))
+    thaad_salvo_interval_base = max(0.0, base_kwargs.get("thaad_salvo_interval", 0.0))
     boost_profile_base = tuple(base_kwargs.get("icbm_boost_profile", DEFAULT_BOOST_PROFILE))
     pitch_base = tuple(base_kwargs.get("icbm_pitch_schedule_deg", DEFAULT_PITCH_SCHEDULE_DEG))
     accel_base = base_kwargs.get("interceptor_max_accel", 60.0)
@@ -847,6 +942,10 @@ def run_monte_carlo(
         kwargs["guidance_noise_std_deg"] = max(
             0.0, run_rng.gauss(noise_base, max(0.05, 0.3 * noise_base if noise_base else 0.1))
         )
+        kwargs["gbi_salvo_count"] = gbi_salvo_base
+        kwargs["gbi_salvo_interval"] = gbi_salvo_interval_base
+        kwargs["thaad_salvo_count"] = thaad_salvo_base
+        kwargs["thaad_salvo_interval"] = thaad_salvo_interval_base
         kwargs["wind_velocity"] = (
             run_rng.gauss(wind_base[0], 80.0),
             run_rng.gauss(wind_base[1], 12.0),
@@ -911,11 +1010,13 @@ def run_monte_carlo(
         if math.isfinite(miss_distance):
             miss_distances.append(miss_distance)
 
-        for name, report in result.interceptor_reports.items():
+        for report in result.interceptor_reports.values():
             if report.target_label == "primary" and report.success:
-                layer_primary_counts[name] = layer_primary_counts.get(name, 0) + 1
+                base = report.config_name
+                layer_primary_counts[base] = layer_primary_counts.get(base, 0) + 1
             if report.target_label == "decoy":
-                layer_decoy_counts[name] = layer_decoy_counts.get(name, 0) + 1
+                base = report.config_name
+                layer_decoy_counts[base] = layer_decoy_counts.get(base, 0) + 1
                 decoy_intercepts += 1
 
         if details is not None:
@@ -1153,10 +1254,40 @@ def main() -> None:
         action="store_true",
         help="append to the JSON log instead of overwriting it",
     )
+    parser.add_argument(
+        "--gbi-salvo",
+        type=int,
+        default=1,
+        help="number of exo-atmospheric interceptors launched per salvo (default 1)",
+    )
+    parser.add_argument(
+        "--gbi-salvo-interval",
+        type=float,
+        default=0.0,
+        help="spacing in seconds between exo-atmospheric salvo launches (default 0)",
+    )
+    parser.add_argument(
+        "--thaad-salvo",
+        type=int,
+        default=1,
+        help="number of terminal interceptors launched per salvo (default 1)",
+    )
+    parser.add_argument(
+        "--thaad-salvo-interval",
+        type=float,
+        default=0.0,
+        help="spacing in seconds between terminal salvo launches (default 0)",
+    )
     args = parser.parse_args()
 
     base_rng = random.Random(args.seed) if args.seed is not None else None
-    result = simulate_icbm_intercept(rng=base_rng)
+    result = simulate_icbm_intercept(
+        rng=base_rng,
+        gbi_salvo_count=args.gbi_salvo,
+        gbi_salvo_interval=args.gbi_salvo_interval,
+        thaad_salvo_count=args.thaad_salvo,
+        thaad_salvo_interval=args.thaad_salvo_interval,
+    )
     print(_summarize(result))
     print(f"Sample count: {len(result.samples)} | Intercept success: {result.intercept_success}")
 
@@ -1178,6 +1309,12 @@ def main() -> None:
         summary = run_monte_carlo(
             args.runs,
             seed=summary_seed,
+            base_kwargs={
+                "gbi_salvo_count": args.gbi_salvo,
+                "gbi_salvo_interval": args.gbi_salvo_interval,
+                "thaad_salvo_count": args.thaad_salvo,
+                "thaad_salvo_interval": args.thaad_salvo_interval,
+            },
             details=details_list,
         )
         print()

@@ -14,6 +14,7 @@ The simulation uses layered interceptors, each described by an `InterceptorConfi
 - **Acceleration limit**: `60 g`.
 - **Sensor noise**: `~0.08°` (reduced relative to the base noise).
 - **Confusion probability**: Scaled to discourage decoy lock-ons; seeker can reacquire at least `1%` per second.
+- **Salvo**: Defaults to a single interceptor; increase `salvo_count` or `salvo_interval` for parallel launches.
 
 This layer is optimized for exo-atmospheric mid-course engagements where the warhead is still above 120 km and drag is low.
 
@@ -27,6 +28,8 @@ This layer is optimized for exo-atmospheric mid-course engagements where the war
 - **Acceleration limit**: Up to `110 g`.
 - **Sensor noise**: At least `0.05°`, reflecting more challenging terminal tracking.
 - **Confusion probability**: Slightly higher susceptibility to decoys but with a faster reacquisition rate (`>= 0.02` per second).
+- **Dependency**: Waits on the GBI layer; launches only after the GBI interceptor fails or 180 seconds elapse without a primary kill.
+- **Salvo**: Also defaults to a single interceptor; configure `salvo_count` to fan out multiple terminal shots.
 
 This layer catches anything that leaks through the upper tier and re-enters the denser atmosphere.
 
@@ -41,6 +44,7 @@ To add or modify layers:
 1. Import `InterceptorConfig` and construct your desired list.
 2. Pass the list to `simulate_icbm_intercept(interceptors=[...])` or update the default branch inside the function.
 3. Tune `launch_delay`, `engage_altitude_*`, `speed_cap`, and guidance parameters to model a new capability.
+4. Optionally set `salvo_count` (number of interceptors) and `salvo_interval` (seconds between launches) for each layer.
 
 Example:
 
@@ -62,9 +66,14 @@ patriot = InterceptorConfig(
     confusion_probability=0.25,
     reacquisition_rate=0.05,
     max_flight_time=200.0,
+    depends_on=None,
+    dependency_grace_period=0.0,
+    salvo_count=3,
+    salvo_interval=0.4,
 )
 
 result = simulate_icbm_intercept(interceptors=[patriot])
 ```
 
 Feel free to mix and match additional agents to explore layered or geographically distributed defense concepts.
+When stacking layers, set `depends_on` (and optionally `dependency_grace_period`) on the downstream interceptor so it only launches once the specified upstream layer fails or exhausts its engagement window.

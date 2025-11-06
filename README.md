@@ -34,6 +34,8 @@ Sample count: 3480 | Intercept success: True
 - `--plot` — render a static trajectory plot (requires Matplotlib; only available when `--runs 1`).
 - `--animate` — play an animation of the engagement (requires Matplotlib; only available when `--runs 1`).
 - `--log-json PATH` — append JSONL entries describing each run to `PATH`. Combine with `--append-log` to avoid overwriting.
+- `--gbi-salvo N` / `--thaad-salvo N` — launch `N` interceptors in parallel (or staggered) for the upper and lower layers.
+- `--gbi-salvo-interval SECONDS` / `--thaad-salvo-interval SECONDS` — spacing between interceptors in the salvo (default `0` for simultaneous launches).
 
 When Monte Carlo mode is active you receive aggregated statistics such as hit probability, decoy intercepts, and miss distances. Specifying `--seed` lets you replay a particular draw set.
 
@@ -58,6 +60,7 @@ This makes it straightforward to ingest the output into pandas or your preferred
 - Wind vector, drag coefficients, and mass fractions for the warhead and decoys.
 - Interceptor launch timing, speed caps, guidance gains, acceleration limits, and seeker noise.
 - Decoy deployment timing, quantity, and sensor confusion mechanics.
+- Salvo sizing via `salvo_count` and `salvo_interval` on each `InterceptorConfig` to model layered parallel launches.
 
 From Python you can import the module and call `simulate_icbm_intercept` directly:
 
@@ -74,9 +77,37 @@ print(result.intercept_success)
 
 For Monte Carlo experiments, `run_monte_carlo(runs, base_kwargs=...)` accepts baseline values that will be perturbed per run.
 
+### Layered Engagement Logic
+
+Interceptor coordination now supports dependencies. For example, the default THAAD layer waits for the GBI layer to fail (decoy intercept, timeout, or 180 seconds with no kill) before it launches. You can control this by passing `depends_on="GBI"` and optionally `dependency_grace_period` when building an `InterceptorConfig`. Setting a grace period allows the next layer to launch even if the upstream interceptor is still in flight but has exceeded its allotted engagement window.
+
+### Parallel Salvo Launches
+
+Each interceptor layer can now spawn multiple vehicles and either launch them simultaneously or with a configurable cadence. Example:
+
+```python
+from simulation import simulate_icbm_intercept
+
+result = simulate_icbm_intercept(
+    gbi_salvo_count=3,
+    gbi_salvo_interval=0.5,  # 500 ms spacing
+    thaad_salvo_count=2,
+)
+```
+
+Reports and trajectory samples use names like `GBI#1`, `GBI#2`, etc., so you can trace which vehicle achieved a kill or was spoofed by a decoy.
+
 ## Interceptor Agents
 
 See `agents.md` for a breakdown of the default interceptor layers and guidance behaviour. You can extend the `interceptors` argument to supply additional `InterceptorConfig` entries or modify the defaults inside `simulate_icbm_intercept`.
+
+## Feature Ideas
+
+- Add boost-phase interceptors tied to separate radar cue delays and satellite tracking errors.
+- Model MIRV releases with per-warhead discrimination tied to seeker fidelity and radar cross sections.
+- Introduce command-and-control latency so interceptor handovers depend on communications quality.
+- Export HDF5 or parquet logs for bulk statistical analysis and integration with external tools.
+- Wrap the simulation in a simple web dashboard or notebook widgets for interactive parameter sweeps.
 
 ## Project Layout
 
