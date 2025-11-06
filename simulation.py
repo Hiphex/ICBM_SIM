@@ -705,22 +705,23 @@ def simulate_icbm_intercept(
             if primary_distance <= cfg.intercept_distance:
                 intercept_success = True
                 intercept_time = time
-                intercept_position = state.position
+                intercept_position = icbm_pos
                 intercept_target_label = "primary"
                 state.success = True
                 state.expended = True
                 state.intercept_time = time
-                state.intercept_position = state.position
+                state.intercept_position = icbm_pos
                 state.intercept_target_label = "primary"
                 break
             if decoy_hit_index is not None:
                 intercept_time = time
-                intercept_position = state.position
+                target_pos = decoy_positions[decoy_hit_index] if decoy_hit_index < len(decoy_positions) else state.position
+                intercept_position = target_pos
                 intercept_target_label = "decoy"
                 state.success = False
                 state.expended = True
                 state.intercept_time = time
-                state.intercept_position = state.position
+                state.intercept_position = target_pos
                 state.intercept_target_label = "decoy"
                 if decoy_hit_index < len(decoy_positions):
                     decoy_positions.pop(decoy_hit_index)
