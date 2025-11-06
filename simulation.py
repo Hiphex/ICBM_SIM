@@ -905,6 +905,30 @@ def _summarize(result: SimulationResult) -> str:
     return "Simulation ended without intercept or ground impact (timeout)."
 
 
+def _describe_interceptor(name: str, report: InterceptorReport) -> str:
+    if report.launch_time is None:
+        return f"{name}: never launched (outside engagement window)"
+
+    desc = f"{name}: launched t={report.launch_time:6.1f}s"
+    if report.intercept_time is not None:
+        target = report.target_label or "unknown"
+        if report.success and target == "primary":
+            outcome = "primary kill"
+        elif target == "decoy":
+            outcome = "decoy intercept"
+        elif report.success:
+            outcome = "successful intercept"
+        else:
+            outcome = "intercept"
+        desc += f", {outcome} at t={report.intercept_time:6.1f}s"
+    else:
+        if report.expended:
+            desc += ", expended without intercept"
+        else:
+            desc += ", still active at simulation end"
+    return desc
+
+
 def run_monte_carlo(
     runs: int,
     *,
@@ -1375,6 +1399,9 @@ def main() -> None:
     )
     print(_summarize(result))
     print(f"Sample count: {len(result.samples)} | Intercept success: {result.intercept_success}")
+    for name in sorted(result.interceptor_reports.keys()):
+        report = result.interceptor_reports[name]
+        print("  " + _describe_interceptor(name, report))
 
     log_entries: List[Dict[str, Any]] = []
     if args.log_json is not None:
