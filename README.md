@@ -99,7 +99,7 @@ Reports and trajectory samples use names like `GBI#1`, `GBI#2`, etc., so you can
 
 ### Layer Geometry Defaults
 
-The upper-tier GBI still launches from an 800 km downrange site, but the terminal THAAD battery is now staged ~3.2 Mm further along the trajectory with a shorter launch delay, a higher intercept ceiling (400 km), a larger lethal radius (~150 km), and a higher speed cap to sprint into the re-entry corridor. That head-on geometry gives the second layer a realistic chance to engage the primary if the GBI salvo is spoofed.
+The upper-tier GBI still launches from an 800 km downrange site, but the terminal THAAD battery is now staged ~3.2 Mm further along the trajectory with a shorter launch delay, a higher intercept ceiling (≈1 400 km), and a higher speed cap to sprint into the re-entry corridor. The layer also works with a 60 km lethal radius, making the engagement more precise while still giving the second layer a realistic chance to catch leak-through shots head-on.
 
 ## Interceptor Agents
 
