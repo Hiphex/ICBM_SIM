@@ -1206,6 +1206,25 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
             line.set_data(xs[:upto], ys[:upto])
         return [icbm_line, *interceptor_lines.values(), *decoy_lines.values(), *intercept_markers]
 
+    # Establish axis limits so trajectories are visible from the first frame.
+    all_x: List[float] = [x for x in icbm_x]
+    all_y: List[float] = [y for y in icbm_y]
+    for xs, ys in interceptor_paths.values():
+        all_x.extend(x for x in xs if not math.isnan(x))
+        all_y.extend(y for y in ys if not math.isnan(y))
+    for xs, ys in decoy_paths.values():
+        all_x.extend(x for x in xs if not math.isnan(x))
+        all_y.extend(y for y in ys if not math.isnan(y))
+    if all_x and all_y:
+        x_min, x_max = min(all_x), max(all_x)
+        y_min, y_max = min(all_y), max(all_y)
+        span_x = max(1.0, x_max - x_min)
+        span_y = max(1.0, y_max - y_min)
+        margin_x = 0.05 * span_x
+        margin_y = 0.05 * span_y
+        ax.set_xlim(x_min - margin_x, x_max + margin_x)
+        ax.set_ylim(max(0.0, y_min - margin_y), y_max + margin_y)
+
     anim = FuncAnimation(
         fig,
         update,
