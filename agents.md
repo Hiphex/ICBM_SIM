@@ -20,15 +20,16 @@ This layer is optimized for exo-atmospheric mid-course engagements where the war
 
 ### THAAD (Terminal High Altitude Area Defense analogue)
 
-- **Site**: `1.6 Mm` downrange from the GBI site.
-- **Engagement altitude**: sea level to `160 km`.
-- **Launch delay**: `~640 s` after detection (base delay plus 520 seconds).
-- **Speed cap**: `3.2 km/s`.
-- **Guidance**: Moderately higher gain (`>= 0.46`) with stronger damping (`>= 0.08`) for endo-atmospheric flight.
-- **Acceleration limit**: Up to `110 g`.
-- **Sensor noise**: At least `0.05°`, reflecting more challenging terminal tracking.
-- **Confusion probability**: Slightly higher susceptibility to decoys but with a faster reacquisition rate (`>= 0.02` per second).
-- **Dependency**: Waits on the GBI layer; launches only after the GBI interceptor fails or 180 seconds elapse without a primary kill.
+- **Site**: `3.2 Mm` downrange from the GBI site, positioned near the predicted impact zone for a head-on shot.
+- **Engagement altitude**: sea level to `400 km`.
+- **Launch delay**: `~380 s` after detection (base delay plus 260 seconds).
+- **Speed cap**: `5.8 km/s`.
+- **Guidance**: Moderately higher gain (`>= 0.7`) with stronger damping (`>= 0.11`) for endo-atmospheric flight.
+- **Acceleration limit**: Up to `200 g`.
+- **Sensor noise**: At least `0.03°`, reflecting more challenging terminal tracking.
+- **Interception radius**: `150 km` lethal radius to approximate a large terminal kill vehicle.
+- **Confusion probability**: Slightly higher susceptibility to decoys but with a faster reacquisition rate (`>= 0.04` per second).
+- **Dependency**: Waits on the GBI layer; launches only after the GBI interceptor fails or 60 seconds elapse without a primary kill.
 - **Salvo**: Also defaults to a single interceptor; configure `salvo_count` to fan out multiple terminal shots.
 
 This layer catches anything that leaks through the upper tier and re-enters the denser atmosphere.

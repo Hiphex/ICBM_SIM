@@ -97,6 +97,10 @@ result = simulate_icbm_intercept(
 
 Reports and trajectory samples use names like `GBI#1`, `GBI#2`, etc., so you can trace which vehicle achieved a kill or was spoofed by a decoy.
 
+### Layer Geometry Defaults
+
+The upper-tier GBI still launches from an 800 km downrange site, but the terminal THAAD battery is now staged ~3.2 Mm further along the trajectory with a shorter launch delay, a higher intercept ceiling (400 km), a larger lethal radius (~150 km), and a higher speed cap to sprint into the re-entry corridor. That head-on geometry gives the second layer a realistic chance to engage the primary if the GBI salvo is spoofed.
+
 ## Interceptor Agents
 
 See `agents.md` for a breakdown of the default interceptor layers and guidance behaviour. You can extend the `interceptors` argument to supply additional `InterceptorConfig` entries or modify the defaults inside `simulate_icbm_intercept`.
