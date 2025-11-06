@@ -712,6 +712,8 @@ def simulate_icbm_intercept(
                 state.intercept_time = time
                 state.intercept_position = icbm_pos
                 state.intercept_target_label = "primary"
+                state.position = icbm_pos
+                state.velocity = (0.0, 0.0)
                 break
             if decoy_hit_index is not None:
                 intercept_time = time
@@ -723,6 +725,8 @@ def simulate_icbm_intercept(
                 state.intercept_time = time
                 state.intercept_position = target_pos
                 state.intercept_target_label = "decoy"
+                state.position = target_pos
+                state.velocity = (0.0, 0.0)
                 if decoy_hit_index < len(decoy_positions):
                     decoy_positions.pop(decoy_hit_index)
                     decoy_velocities.pop(decoy_hit_index)
