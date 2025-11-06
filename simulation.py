@@ -201,7 +201,7 @@ def _interceptor_style(config_name: str) -> Dict[str, Any]:
 def simulate_icbm_intercept(
     *,
     dt: float = 0.25,
-    max_time: float = 2000.0,
+    max_time: Optional[float] = None,
     gravity: float = 9.81,
     icbm_start: Vector = (0.0, 0.0),
     icbm_velocity: Vector = (2400.0, 6200.0),
@@ -451,7 +451,15 @@ def simulate_icbm_intercept(
         ]
 
     time = 0.0
-    while time <= max_time:
+    step_count = 0
+    max_steps = math.inf
+    if max_time is not None:
+        max_steps = int(math.ceil(max_time / dt))
+    else:
+        # Safety guard: with dt=0.25, 200k steps ≈ 50,000 seconds (~13.9 hours).
+        max_steps = 200_000
+
+    while True:
         if (
             not decoys_deployed
             and decoy_release_time is not None
@@ -775,6 +783,14 @@ def simulate_icbm_intercept(
             break
 
         time += dt
+        step_count += 1
+        if step_count >= max_steps:
+            if max_time is not None:
+                break
+            raise RuntimeError(
+                "Simulation exceeded safety iteration limit without intercept or ground impact. "
+                "Check parameters for runaway conditions or supply max_time."
+            )
 
     parameter_record["decoys_deployed"] = released_decoy_count
     parameter_record["warhead_active_mass"] = active_mass
@@ -905,7 +921,7 @@ def _summarize(result: SimulationResult) -> str:
     return "Simulation ended without intercept or ground impact (timeout)."
 
 
-def _describe_interceptor(name: str, report: InterceptorReport) -> str:
+def _describe_interceptor(name: str, report: InterceptorReport, icbm_impact_time: Optional[float]) -> str:
     if report.launch_time is None:
         return f"{name}: never launched (outside engagement window)"
 
@@ -923,9 +939,15 @@ def _describe_interceptor(name: str, report: InterceptorReport) -> str:
         desc += f", {outcome} at t={report.intercept_time:6.1f}s"
     else:
         if report.expended:
-            desc += ", expended without intercept"
+            if icbm_impact_time is not None:
+                desc += f", missed before impact at t={icbm_impact_time:6.1f}s"
+            else:
+                desc += ", expended without intercept"
         else:
-            desc += ", still active at simulation end"
+            if icbm_impact_time is not None:
+                desc += f", still in flight when impact occurred at t={icbm_impact_time:6.1f}s"
+            else:
+                desc += ", still active at simulation end"
     return desc
 
 
@@ -1401,7 +1423,7 @@ def main() -> None:
     print(f"Sample count: {len(result.samples)} | Intercept success: {result.intercept_success}")
     for name in sorted(result.interceptor_reports.keys()):
         report = result.interceptor_reports[name]
-        print("  " + _describe_interceptor(name, report))
+        print("  " + _describe_interceptor(name, report, result.icbm_impact_time))
 
     log_entries: List[Dict[str, Any]] = []
     if args.log_json is not None:
