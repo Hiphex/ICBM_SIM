@@ -76,6 +76,7 @@ class TrajectorySample:
     interceptor_position: Optional[Vector]
     interceptor_velocity: Optional[Vector]
     decoy_positions: List[Vector]
+    decoy_ids: List[int]
     interceptor_positions_map: Dict[str, Optional[Vector]] = field(default_factory=dict)
     interceptor_velocities_map: Dict[str, Optional[Vector]] = field(default_factory=dict)
 
@@ -186,6 +187,15 @@ class MonteCarloSummary:
             median_miss = statistics.median(self.miss_distances)
             lines.append(f"  Median terminal miss distance: {median_miss:,.0f} m")
         return "\n".join(lines)
+
+
+def _interceptor_style(config_name: str) -> Dict[str, Any]:
+    """Return consistent style hints for a given interceptor family."""
+    base_styles: Dict[str, Dict[str, Any]] = {
+        "GBI": {"color": "#1E88E5", "linewidth": 2.3},
+        "THAAD": {"color": "#D81B60", "linewidth": 2.3, "linestyle": "-."},
+    }
+    return dict(base_styles.get(config_name, {}))
 
 
 def simulate_icbm_intercept(
@@ -429,6 +439,8 @@ def simulate_icbm_intercept(
     decoy_masses: List[float] = []
     decoy_drag_coefficients: List[float] = []
     decoy_reference_areas: List[float] = []
+    decoy_ids: List[int] = []
+    next_decoy_id = 0
     decoys_deployed = False
     released_decoy_count = 0
 
@@ -457,6 +469,7 @@ def simulate_icbm_intercept(
             decoy_masses = []
             decoy_drag_coefficients = []
             decoy_reference_areas = []
+            decoy_ids = []
 
             for _ in range(decoy_count):
                 orientation = normalize((rng.gauss(0.0, 1.0), rng.gauss(0.0, 1.0)))
@@ -475,6 +488,8 @@ def simulate_icbm_intercept(
                 drag_multiplier = max(decoy_drag_multiplier, 0.1)
                 decoy_drag_coefficients.append(icbm_drag_coefficient * drag_multiplier)
                 decoy_reference_areas.append(icbm_reference_area * drag_multiplier)
+                decoy_ids.append(next_decoy_id)
+                next_decoy_id += 1
 
             released_decoy_count = len(decoy_positions)
 
@@ -705,6 +720,7 @@ def simulate_icbm_intercept(
                     decoy_masses.pop(decoy_hit_index)
                     decoy_drag_coefficients.pop(decoy_hit_index)
                     decoy_reference_areas.pop(decoy_hit_index)
+                    decoy_ids.pop(decoy_hit_index)
                 for other_state in interceptor_states:
                     other_state.selected_decoy_index = None
                 break
@@ -735,6 +751,8 @@ def simulate_icbm_intercept(
                 default_interceptor_position = interceptor_positions_map.get(default_label)
                 default_interceptor_velocity = interceptor_velocities_map.get(default_label)
 
+        decoy_snapshot = snapshot_decoys()
+
         samples.append(
             TrajectorySample(
                 time,
@@ -744,7 +762,8 @@ def simulate_icbm_intercept(
                 interceptor_velocity=default_interceptor_velocity,
                 interceptor_positions_map=interceptor_positions_map,
                 interceptor_velocities_map=interceptor_velocities_map,
-                decoy_positions=snapshot_decoys(),
+                decoy_positions=decoy_snapshot,
+                decoy_ids=list(decoy_ids),
             )
         )
 
@@ -1055,55 +1074,83 @@ def _plot(result: SimulationResult) -> None:
     icbm_x = [sample.icbm_position[0] for sample in result.samples]
     icbm_y = [sample.icbm_position[1] for sample in result.samples]
 
-    interceptor_names = list(result.interceptor_reports.keys())
     interceptor_paths: Dict[str, List[Optional[Vector]]] = {
-        name: [] for name in interceptor_names
+        name: [] for name in result.interceptor_reports.keys()
     }
     for sample in result.samples:
-        for name in interceptor_names:
+        for name in interceptor_paths.keys():
             interceptor_paths[name].append(sample.interceptor_positions_map.get(name))
 
-    decoy_x_series: Dict[int, List[Optional[float]]] = {}
-    decoy_y_series: Dict[int, List[Optional[float]]] = {}
-    max_decoys_seen = 0
+    # Track decoy trajectories by unique ID so colors remain stable even if others are removed.
+    decoy_id_order: List[int] = []
     for sample in result.samples:
-        decoy_count = len(sample.decoy_positions)
-        if decoy_count > max_decoys_seen:
-            max_decoys_seen = decoy_count
-        for idx in range(decoy_count):
-            decoy_x_series.setdefault(idx, []).append(sample.decoy_positions[idx][0])
-            decoy_y_series.setdefault(idx, []).append(sample.decoy_positions[idx][1])
-        for idx in range(decoy_count, max_decoys_seen):
-            decoy_x_series.setdefault(idx, []).append(None)
-            decoy_y_series.setdefault(idx, []).append(None)
+        for decoy_id in sample.decoy_ids:
+            if decoy_id not in decoy_id_order:
+                decoy_id_order.append(decoy_id)
+
+    decoy_paths: Dict[int, Tuple[List[float], List[float]]] = {}
+    for decoy_id in decoy_id_order:
+        decoy_paths[decoy_id] = ([], [])
+
+    for sample in result.samples:
+        id_to_pos = {
+            decoy_id: pos for decoy_id, pos in zip(sample.decoy_ids, sample.decoy_positions)
+        }
+        for decoy_id in decoy_id_order:
+            xs, ys = decoy_paths[decoy_id]
+            pos = id_to_pos.get(decoy_id)
+            if pos is None:
+                xs.append(math.nan)
+                ys.append(math.nan)
+            else:
+                xs.append(pos[0])
+                ys.append(pos[1])
 
     plt.figure(figsize=(10, 5))
-    plt.plot(icbm_x, icbm_y, label="ICBM trajectory")
+    plt.plot(icbm_x, icbm_y, color="#4D4D4D", linewidth=2.0, label="ICBM")
+
     for name, positions in interceptor_paths.items():
         filtered = [p for p in positions if p is not None]
         if not filtered:
             continue
         x_vals = [p[0] for p in filtered]
         y_vals = [p[1] for p in filtered]
-        plt.plot(x_vals, y_vals, label=f"{name} trajectory")
+        report = result.interceptor_reports[name]
+        style = _interceptor_style(report.config_name)
+        plt.plot(x_vals, y_vals, label=f"{name}", **style)
 
-    for idx in range(max_decoys_seen):
-        dx = decoy_x_series.get(idx, [])
-        dy = decoy_y_series.get(idx, [])
-        clean_points = [(x, y) for x, y in zip(dx, dy) if x is not None and y is not None]
-        if not clean_points:
-            continue
-        xs, ys = zip(*clean_points)
-        plt.plot(xs, ys, linestyle="--", linewidth=0.8, label=f"Decoy {idx + 1}")
+    if decoy_id_order:
+        cmap = plt.get_cmap("tab10")
+        for display_idx, decoy_id in enumerate(decoy_id_order, start=1):
+            xs, ys = decoy_paths[decoy_id]
+            if all(math.isnan(x) for x in xs):
+                continue
+            color = cmap((display_idx - 1) % cmap.N)
+            plt.plot(
+                xs,
+                ys,
+                linestyle="--",
+                linewidth=0.8,
+                color=color,
+                label=f"Decoy {display_idx}",
+            )
 
     for name, report in result.interceptor_reports.items():
         if report.intercept_position is None:
             continue
         ix, iy = report.intercept_position
+        style = _interceptor_style(report.config_name)
+        marker_color = style.get("color", "tab:red")
         if report.target_label == "primary" and report.success:
-            plt.scatter([ix], [iy], color="red", marker="x", s=100, label=f"{name} primary hit")
+            label = f"{name} primary hit"
+            size = 110
         elif report.target_label == "decoy":
-            plt.scatter([ix], [iy], color="orange", marker="x", s=80, label=f"{name} decoy intercept")
+            label = f"{name} decoy intercept"
+            size = 90
+        else:
+            label = f"{name} intercept"
+            size = 90
+        plt.scatter([ix], [iy], color=marker_color, marker="x", s=size, label=label)
 
     plt.axhline(0.0, color="black", linewidth=0.6)
     plt.xlabel("Range (m)")
@@ -1141,20 +1188,29 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
                 ys.append(pos[1])
         interceptor_paths[name] = (xs, ys)
 
-    max_decoys = max(len(sample.decoy_positions) for sample in result.samples)
+    decoy_id_order: List[int] = []
+    for sample in result.samples:
+        for decoy_id in sample.decoy_ids:
+            if decoy_id not in decoy_id_order:
+                decoy_id_order.append(decoy_id)
+
     decoy_paths: Dict[int, Tuple[List[float], List[float]]] = {}
-    for idx in range(max_decoys):
-        xs: List[float] = []
-        ys: List[float] = []
-        for sample in result.samples:
-            if idx < len(sample.decoy_positions):
-                pos = sample.decoy_positions[idx]
-                xs.append(pos[0])
-                ys.append(pos[1])
-            else:
+    for decoy_id in decoy_id_order:
+        decoy_paths[decoy_id] = ([], [])
+
+    for sample in result.samples:
+        id_to_pos = {
+            decoy_id: pos for decoy_id, pos in zip(sample.decoy_ids, sample.decoy_positions)
+        }
+        for decoy_id in decoy_id_order:
+            xs, ys = decoy_paths[decoy_id]
+            pos = id_to_pos.get(decoy_id)
+            if pos is None:
                 xs.append(math.nan)
                 ys.append(math.nan)
-        decoy_paths[idx] = (xs, ys)
+            else:
+                xs.append(pos[0])
+                ys.append(pos[1])
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.set_xlabel("Range (m)")
@@ -1162,25 +1218,33 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
     ax.set_title("ICBM Intercept Simulation (Animation)")
     ax.grid(True, linewidth=0.2)
 
-    icbm_line, = ax.plot([], [], color="tab:blue", label="ICBM")
+    icbm_line, = ax.plot([], [], color="#4D4D4D", linewidth=2.0, label="ICBM")
     interceptor_lines: Dict[str, any] = {}
-    for idx, name in enumerate(interceptor_names):
-        interceptor_lines[name], = ax.plot([], [], label=f"{name}")
+    for name in interceptor_names:
+        report = result.interceptor_reports[name]
+        style = _interceptor_style(report.config_name)
+        style.setdefault("linewidth", 2.0)
+        interceptor_lines[name], = ax.plot([], [], label=f"{name}", **style)
     decoy_lines: Dict[int, any] = {}
-    for idx in range(max_decoys):
-        decoy_lines[idx], = ax.plot([], [], linestyle="--", linewidth=0.7, label=f"Decoy {idx + 1}")
+    cmap = plt.get_cmap("tab10")
+    for display_idx, decoy_id in enumerate(decoy_id_order, start=1):
+        color = cmap((display_idx - 1) % cmap.N)
+        decoy_lines[decoy_id], = ax.plot(
+            [], [], linestyle="--", linewidth=0.7, color=color, label=f"Decoy {display_idx}"
+        )
 
     intercept_markers = []
     for name, report in result.interceptor_reports.items():
         if report.intercept_position is None:
             continue
-        color = "red" if report.target_label == "primary" and report.success else "orange"
+        style = _interceptor_style(report.config_name)
+        color = style.get("color", "tab:red" if report.success else "orange")
         marker = ax.scatter(
             [report.intercept_position[0]],
             [report.intercept_position[1]],
             color=color,
             marker="x",
-            s=90 if color == "red" else 70,
+            s=100 if report.success else 80,
             label=f"{name} {'kill' if report.success else 'decoy'}",
         )
         intercept_markers.append(marker)
@@ -1201,8 +1265,8 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
         for name, line in interceptor_lines.items():
             xs, ys = interceptor_paths[name]
             line.set_data(xs[:upto], ys[:upto])
-        for idx, line in decoy_lines.items():
-            xs, ys = decoy_paths[idx]
+        for decoy_id, line in decoy_lines.items():
+            xs, ys = decoy_paths[decoy_id]
             line.set_data(xs[:upto], ys[:upto])
         return [icbm_line, *interceptor_lines.values(), *decoy_lines.values(), *intercept_markers]
 
