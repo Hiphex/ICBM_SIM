@@ -1146,6 +1146,22 @@ def _plot(result: SimulationResult) -> None:
         for name in interceptor_paths.keys():
             interceptor_paths[name].append(sample.interceptor_positions_map.get(name))
 
+    # Determine the final sample index to render for each interceptor when an intercept occurs.
+    intercept_sample_indices: Dict[str, Optional[int]] = {}
+    for name, report in result.interceptor_reports.items():
+        intercept_time = report.intercept_time
+        if intercept_time is None:
+            intercept_sample_indices[name] = None
+            continue
+
+        last_index: Optional[int] = None
+        for idx, sample in enumerate(result.samples):
+            if sample.time > intercept_time:
+                break
+            if sample.interceptor_positions_map.get(name) is not None:
+                last_index = idx
+        intercept_sample_indices[name] = last_index
+
     # Track decoy trajectories by unique ID so colors remain stable even if others are removed.
     decoy_id_order: List[int] = []
     for sample in result.samples:
@@ -1175,11 +1191,19 @@ def _plot(result: SimulationResult) -> None:
     plt.plot(icbm_x, icbm_y, color="#4D4D4D", linewidth=2.0, label="ICBM")
 
     for name, positions in interceptor_paths.items():
-        filtered = [p for p in positions if p is not None]
-        if not filtered:
+        intercept_idx = intercept_sample_indices.get(name)
+        x_vals: List[float] = []
+        y_vals: List[float] = []
+        for idx, pos in enumerate(positions):
+            if intercept_idx is not None and idx > intercept_idx:
+                break
+            if pos is None:
+                continue
+            x_vals.append(pos[0])
+            y_vals.append(pos[1])
+
+        if not x_vals:
             continue
-        x_vals = [p[0] for p in filtered]
-        y_vals = [p[1] for p in filtered]
         report = result.interceptor_reports[name]
         style = _interceptor_style(report.config_name)
         plt.plot(x_vals, y_vals, label=f"{name}", **style)
