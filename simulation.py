@@ -487,8 +487,9 @@ def simulate_icbm_intercept(
     if max_time is not None:
         max_steps = int(math.ceil(max_time / dt))
     else:
-        # Safety guard: with dt=0.25, 200k steps ≈ 50,000 seconds (~13.9 hours).
-        max_steps = 200_000
+        # Safety guard: maintain roughly 50,000 simulated seconds regardless of dt.
+        target_seconds = 50_000.0
+        max_steps = int(math.ceil(target_seconds / dt))
 
     while True:
         if (
