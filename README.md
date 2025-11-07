@@ -99,7 +99,7 @@ Reports and trajectory samples use names like `GBI#1`, `GBI#2`, etc., so you can
 
 ### Layer Geometry Defaults
 
-Both layers now stage from the same downrange site (~3.8 Mm) near the expected re-entry corridor. The GBI salvo leaves almost immediately, while THAAD waits for confirmation of a GBI miss and then sprints into the terminal window with a shorter lethal radius (≈45 km) and higher seeker noise/confusion to reflect the publicly reported THAAD test success rate (roughly the low-80% range, with real-world performance likely lower). That mix keeps THAAD in the fight but far from a guaranteed backup kill.
+Both layers now stage from the same downrange site (~3.8 Mm) near the expected re-entry corridor. The GBI salvo leaves almost immediately, while THAAD launches only after a GBI miss and sprints into the terminal window with explicit range/altitude gates (GBI ≈0.4–6.0 Mm, THAAD ≈0–0.26 Mm). The calibration leans on public scorecards: the Missile Defense Agency’s **Ballistic Missile Defense Intercept Flight Test Record** (Jan 2019) lists 10 GMD hits in 18 attempts through 2018 (12/20 after the 2017/2019 shots), while CSIS’s **THAAD Achieves 16th Successful Intercept** brief (Aug 2019) documents THAAD’s 16/16 scripted intercepts. Monte Carlo batches (500 runs, seed 20251106) currently land at ≈53 % primary kills from GBI and ≈18 % from THAAD (≈40 % conditional success once GBI fails), highlighting the gap between developmental tests and our more pessimistic field assumptions.
 
 ## Interceptor Agents
 

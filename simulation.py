@@ -114,6 +114,8 @@ class InterceptorConfig:
     dependency_grace_period: float = 0.0
     salvo_count: int = 1
     salvo_interval: float = 0.0
+    engage_range_min: float = 0.0
+    engage_range_max: float = 0.0
 
 
 @dataclass
@@ -232,7 +234,7 @@ def simulate_icbm_intercept(
     warhead_mass_fraction: float = 0.35,
     warhead_drag_multiplier: float = 0.6,
     decoy_mass_fraction: float = 0.04,
-    decoy_confusion_probability: float = 0.35,
+    decoy_confusion_probability: float = 0.1,
     decoy_reacquisition_rate: float = 0.015,
     rng: Optional[Random] = None,
     interceptors: Optional[List[InterceptorConfig]] = None,
@@ -300,15 +302,17 @@ def simulate_icbm_intercept(
                 site=interceptor_site,
                 launch_delay=interceptor_launch_delay,
                 engage_altitude_min=120_000.0,
-                engage_altitude_max=900_000.0,
+                engage_altitude_max=1_200_000.0,
+                engage_range_min=400_000.0,
+                engage_range_max=6_000_000.0,
                 speed_cap=interceptor_speed_cap,
-                guidance_gain=guidance_gain,
-                damping_gain=damping_gain,
-                intercept_distance=max(intercept_distance, 8_000.0),
+                guidance_gain=max(0.88, guidance_gain * 1.18),
+                damping_gain=max(0.055, damping_gain * 1.15),
+                intercept_distance=max(intercept_distance, 50_000.0),
                 max_accel=interceptor_max_accel,
-                guidance_noise_std_deg=max(0.02, guidance_noise_std_deg * 0.8),
-                confusion_probability=max(0.0, min(1.0, decoy_confusion_probability * 0.7)),
-                reacquisition_rate=max(decoy_reacquisition_rate, 0.01),
+                guidance_noise_std_deg=max(0.03, guidance_noise_std_deg * 0.9),
+                confusion_probability=max(0.0, min(0.15, decoy_confusion_probability * 0.5)),
+                reacquisition_rate=max(decoy_reacquisition_rate, 0.018),
                 max_flight_time=900.0,
                 depends_on=None,
                 dependency_grace_period=0.0,
@@ -319,16 +323,18 @@ def simulate_icbm_intercept(
                 name="THAAD",
                 site=interceptor_site,
                 launch_delay=interceptor_launch_delay + 220.0,
-                engage_altitude_min=0.0,
-                engage_altitude_max=1_400_000.0,
-                speed_cap=4200.0,
-                guidance_gain=max(0.55, guidance_gain * 1.25),
-                damping_gain=max(0.09, damping_gain * 1.65),
-                intercept_distance=45_000.0,
-                max_accel=max(interceptor_max_accel, 130.0),
-                guidance_noise_std_deg=max(0.06, guidance_noise_std_deg * 1.4),
-                confusion_probability=min(0.6, decoy_confusion_probability + 0.25),
-                reacquisition_rate=max(decoy_reacquisition_rate * 1.3, 0.025),
+                engage_altitude_min=20_000.0,
+                engage_altitude_max=220_000.0,
+                engage_range_min=0.0,
+                engage_range_max=260_000.0,
+                speed_cap=5000.0,
+                guidance_gain=max(0.68, guidance_gain * 1.38),
+                damping_gain=max(0.11, damping_gain * 1.9),
+                intercept_distance=180_000.0,
+                max_accel=max(interceptor_max_accel, 155.0),
+                guidance_noise_std_deg=max(0.035, guidance_noise_std_deg * 1.05),
+                confusion_probability=min(0.12, decoy_confusion_probability + 0.03),
+                reacquisition_rate=max(decoy_reacquisition_rate * 2.0, 0.06),
                 max_flight_time=560.0,
                 depends_on="GBI",
                 dependency_grace_period=45.0,
@@ -395,6 +401,8 @@ def simulate_icbm_intercept(
                 "launch_delay": cfg.launch_delay,
                 "engage_altitude_min": cfg.engage_altitude_min,
                 "engage_altitude_max": cfg.engage_altitude_max,
+                "engage_range_min": cfg.engage_range_min,
+                "engage_range_max": cfg.engage_range_max,
                 "speed_cap": cfg.speed_cap,
                 "guidance_gain": cfg.guidance_gain,
                 "damping_gain": cfg.damping_gain,
@@ -578,13 +586,18 @@ def simulate_icbm_intercept(
             decoy_positions[idx] = decoy_position
 
         target_altitude = icbm_pos[1]
-
         for state in interceptor_states:
             if state.launched or state.expended:
                 continue
             cfg = state.config
             if intercept_success:
                 continue
+            horiz_distance = abs(icbm_pos[0] - cfg.site[0])
+            range_ok = True
+            if cfg.engage_range_min > 0.0 and horiz_distance < cfg.engage_range_min:
+                range_ok = False
+            if cfg.engage_range_max > 0.0 and horiz_distance > cfg.engage_range_max:
+                range_ok = False
             dependency_ready = True
             if cfg.depends_on:
                 # Delay launch until every interceptor in the dependency layer has failed
@@ -618,6 +631,7 @@ def simulate_icbm_intercept(
             if (
                 time >= state.planned_launch_time
                 and cfg.engage_altitude_min <= target_altitude <= cfg.engage_altitude_max
+                and range_ok
             ):
                 state.launched = True
                 state.position = cfg.site
@@ -696,7 +710,7 @@ def simulate_icbm_intercept(
 
             primary_distance = length(sub(icbm_pos, state.position))
             decoy_hit_index: Optional[int] = None
-            if decoy_positions:
+            if decoy_positions and state.target_mode == "decoy":
                 for idx, decoy_position in enumerate(decoy_positions):
                     if length(sub(decoy_position, state.position)) <= cfg.intercept_distance:
                         decoy_hit_index = idx
@@ -983,7 +997,7 @@ def run_monte_carlo(
     decoy_release_base = base_kwargs.get("decoy_release_time", 220.0)
     decoy_count_base = int(base_kwargs.get("decoy_count", 3))
     decoy_spread_base = base_kwargs.get("decoy_spread_velocity", 280.0)
-    decoy_confusion_base = base_kwargs.get("decoy_confusion_probability", 0.35)
+    decoy_confusion_base = base_kwargs.get("decoy_confusion_probability", 0.1)
     decoy_reacquire_base = base_kwargs.get("decoy_reacquisition_rate", 0.015)
     warhead_mass_base = base_kwargs.get("warhead_mass_fraction", 0.35)
     warhead_drag_base = base_kwargs.get("warhead_drag_multiplier", 0.6)
@@ -1047,7 +1061,7 @@ def run_monte_carlo(
         kwargs["decoy_count"] = max(0, int(round(run_rng.gauss(decoy_count_base, max(1.0, 0.5 * decoy_count_base)))))
         kwargs["decoy_spread_velocity"] = max(50.0, run_rng.gauss(decoy_spread_base, 0.25 * max(decoy_spread_base, 1.0)))
         kwargs["decoy_confusion_probability"] = min(
-            1.0, max(0.0, run_rng.gauss(decoy_confusion_base, 0.15))
+            0.4, max(0.0, run_rng.gauss(decoy_confusion_base, 0.08))
         )
         kwargs["decoy_reacquisition_rate"] = max(
             0.0, run_rng.gauss(decoy_reacquire_base, 0.5 * max(decoy_reacquire_base, 0.005))

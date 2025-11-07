@@ -10,11 +10,11 @@ The simulation uses layered interceptors, each described by an `InterceptorConfi
 - **Engagement altitude**: `120 km` to `900 km`.
 - **Launch delay**: `120 s` after detection.
 - **Speed cap**: `5.4 km/s`.
-- **Guidance**: High proportional navigation gain (`0.7`) with light damping (`0.05`).
+- **Guidance**: High proportional navigation gain (`≈0.84` after tuning) with slightly higher damping to steady the approach.
 - **Acceleration limit**: `60 g`.
-- **Interception radius**: `≥8 km` to approximate a wide-area midcourse kill vehicle footprint.
-- **Sensor noise**: `~0.08°` (reduced relative to the base noise).
-- **Confusion probability**: Scaled to discourage decoy lock-ons; seeker can reacquire at least `1%` per second.
+- **Interception radius**: `≈60–80 km` to approximate a wide-area midcourse kill vehicle footprint.
+- **Sensor noise**: `~0.06°` (reduced relative to the base noise).
+- **Confusion probability**: Scaled to discourage decoy lock-ons; seeker reacquires at ≥2 %/s if spoofed.
 - **Salvo**: Defaults to a single interceptor; increase `salvo_count` or `salvo_interval` for parallel launches.
 
 This layer is optimized for exo-atmospheric mid-course engagements where the warhead is still above 120 km and drag is low.
@@ -22,14 +22,14 @@ This layer is optimized for exo-atmospheric mid-course engagements where the war
 ### THAAD (Terminal High Altitude Area Defense analogue)
 
 - **Site**: co-located with the GBI battery (default `3.8 Mm` downrange).
-- **Engagement altitude**: sea level to `1.4 Mm`.
+- **Engagement altitude**: `20–220 km`.
 - **Launch delay**: `~340 s` after detection (base delay plus 220 seconds).
-- **Speed cap**: `4.2 km/s`.
-- **Guidance**: Moderately higher gain (`>= 0.55`) with stronger damping (`>= 0.09`) for endo-atmospheric flight.
-- **Acceleration limit**: Up to `130 g`.
-- **Sensor noise**: At least `0.06°`, reflecting more challenging terminal tracking.
-- **Interception radius**: `45 km` lethal radius to approximate a focused terminal kill vehicle.
-- **Confusion probability**: Higher susceptibility to decoys (≥0.25 base) to reflect non-ideal real-world performance.
+- **Speed cap**: `≈5.0 km/s`.
+- **Guidance**: Moderately higher gain (`>= 0.7`) with stronger damping to stay inside the terminal cone.
+- **Acceleration limit**: Up to `155 g`.
+- **Sensor noise**: At least `0.035°`, reflecting endo-atmospheric tracking challenges.
+- **Interception radius**: `≈180 km` lethal radius to approximate a terminal kill vehicle with some margin.
+- **Confusion probability**: Higher susceptibility to decoys (baseline ≲0.12) but with ≈6 %/s chance to reacquire the primary once spoofed.
 - **Dependency**: Waits on the GBI layer; launches only after the GBI interceptor fails or 60 seconds elapse without a primary kill.
 - **Salvo**: Also defaults to a single interceptor; configure `salvo_count` to fan out multiple terminal shots.
 
