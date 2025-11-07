@@ -1371,6 +1371,18 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Simple ICBM intercept simulation.")
+
+    def bounded_probability(value: str) -> float:
+        try:
+            parsed = float(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("probability must be a number") from exc
+        if not 0.0 <= parsed <= 1.0:
+            raise argparse.ArgumentTypeError("probability must be between 0 and 1")
+        return parsed
+
+    kwdefaults = simulate_icbm_intercept.__kwdefaults__ or {}
+    default_confusion = kwdefaults.get("decoy_confusion_probability", 0.1)
     parser.add_argument(
         "--plot",
         action="store_true",
@@ -1428,6 +1440,15 @@ def main() -> None:
         default=0.0,
         help="spacing in seconds between terminal salvo launches (default 0)",
     )
+    parser.add_argument(
+        "--decoy-confusion-probability",
+        type=bounded_probability,
+        default=default_confusion,
+        help=(
+            "baseline probability (0-1) that seekers initially lock onto a decoy; "
+            "the GBI layer halves this value while the THAAD layer adds 0.03 up to 0.12"
+        ),
+    )
     args = parser.parse_args()
 
     base_rng = random.Random(args.seed) if args.seed is not None else None
@@ -1437,6 +1458,7 @@ def main() -> None:
         gbi_salvo_interval=args.gbi_salvo_interval,
         thaad_salvo_count=args.thaad_salvo,
         thaad_salvo_interval=args.thaad_salvo_interval,
+        decoy_confusion_probability=args.decoy_confusion_probability,
     )
     print(_summarize(result))
     print(f"Sample count: {len(result.samples)} | Intercept success: {result.intercept_success}")
@@ -1467,6 +1489,7 @@ def main() -> None:
                 "gbi_salvo_interval": args.gbi_salvo_interval,
                 "thaad_salvo_count": args.thaad_salvo,
                 "thaad_salvo_interval": args.thaad_salvo_interval,
+                "decoy_confusion_probability": args.decoy_confusion_probability,
             },
             details=details_list,
         )
