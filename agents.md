@@ -30,7 +30,7 @@ This layer is optimized for exo-atmospheric mid-course engagements where the war
 - **Sensor noise**: At least `0.035°`, reflecting endo-atmospheric tracking challenges.
 - **Interception radius**: `≈180 km` lethal radius to approximate a terminal kill vehicle with some margin.
 - **Confusion probability**: Higher susceptibility to decoys (baseline ≲0.12) but with ≈6 %/s chance to reacquire the primary once spoofed.
-- **Dependency**: Waits on the GBI layer; launches only after the GBI interceptor fails or 60 seconds elapse without a primary kill.
+- **Dependency**: Waits on the GBI layer; launches only after the GBI interceptor fails or 45 seconds elapse without a primary kill.
 - **Salvo**: Also defaults to a single interceptor; configure `salvo_count` to fan out multiple terminal shots.
 
 This layer catches anything that leaks through the upper tier and re-enters the denser atmosphere.
