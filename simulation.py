@@ -258,6 +258,9 @@ def simulate_icbm_intercept(
     * Configurable interceptor salvos (count and spacing) so layered defenses can
       fire parallel shots for higher kill probability.
     """
+    if dt <= 0.0:
+        raise ValueError(f"time step dt must be positive; received {dt!r}")
+
     if rng is None:
         rng = random.Random()
 
@@ -1396,6 +1399,15 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Simple ICBM intercept simulation.")
 
+    def positive_time_step(value: str) -> float:
+        try:
+            parsed = float(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("time step must be a number") from exc
+        if parsed <= 0.0:
+            raise argparse.ArgumentTypeError("time step must be positive")
+        return parsed
+
     def bounded_probability(value: str) -> float:
         try:
             parsed = float(value)
@@ -1407,6 +1419,12 @@ def main() -> None:
 
     kwdefaults = simulate_icbm_intercept.__kwdefaults__ or {}
     default_confusion = kwdefaults.get("decoy_confusion_probability", 0.1)
+    parser.add_argument(
+        "--dt",
+        type=positive_time_step,
+        default=kwdefaults.get("dt", 0.25),
+        help="integration time step in seconds (must be positive)",
+    )
     parser.add_argument(
         "--plot",
         action="store_true",
@@ -1476,14 +1494,18 @@ def main() -> None:
     args = parser.parse_args()
 
     base_rng = random.Random(args.seed) if args.seed is not None else None
-    result = simulate_icbm_intercept(
-        rng=base_rng,
-        gbi_salvo_count=args.gbi_salvo,
-        gbi_salvo_interval=args.gbi_salvo_interval,
-        thaad_salvo_count=args.thaad_salvo,
-        thaad_salvo_interval=args.thaad_salvo_interval,
-        decoy_confusion_probability=args.decoy_confusion_probability,
-    )
+    try:
+        result = simulate_icbm_intercept(
+            rng=base_rng,
+            dt=args.dt,
+            gbi_salvo_count=args.gbi_salvo,
+            gbi_salvo_interval=args.gbi_salvo_interval,
+            thaad_salvo_count=args.thaad_salvo,
+            thaad_salvo_interval=args.thaad_salvo_interval,
+            decoy_confusion_probability=args.decoy_confusion_probability,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     print(_summarize(result))
     print(f"Sample count: {len(result.samples)} | Intercept success: {result.intercept_success}")
     for name in sorted(result.interceptor_reports.keys()):
@@ -1509,6 +1531,7 @@ def main() -> None:
             args.runs,
             seed=summary_seed,
             base_kwargs={
+                "dt": args.dt,
                 "gbi_salvo_count": args.gbi_salvo,
                 "gbi_salvo_interval": args.gbi_salvo_interval,
                 "thaad_salvo_count": args.thaad_salvo,
