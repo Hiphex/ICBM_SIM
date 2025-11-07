@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from random import Random
 from typing import Any, Dict, List, Optional, Tuple
 import json
@@ -198,6 +198,29 @@ def _interceptor_style(config_name: str) -> Dict[str, Any]:
         "THAAD": {"color": "#D81B60", "linewidth": 2.3, "linestyle": "-."},
     }
     return dict(base_styles.get(config_name, {}))
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert simulation parameters to JSON-friendly structures."""
+    if isinstance(value, InterceptorConfig):
+        value = asdict(value)
+
+    if isinstance(value, dict):
+        return {key: _json_safe(sub_value) for key, sub_value in value.items()}
+
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+
+    if isinstance(value, set):
+        return [_json_safe(item) for item in value]
+
+    if isinstance(value, Path):
+        return str(value)
+
+    return value
 
 
 def simulate_icbm_intercept(
@@ -467,8 +490,9 @@ def simulate_icbm_intercept(
     if max_time is not None:
         max_steps = int(math.ceil(max_time / dt))
     else:
-        # Safety guard: with dt=0.25, 200k steps ≈ 50,000 seconds (~13.9 hours).
-        max_steps = 200_000
+        # Safety guard: maintain roughly 50,000 simulated seconds regardless of dt.
+        target_seconds = 50_000.0
+        max_steps = int(math.ceil(target_seconds / dt))
 
     while True:
         if (
@@ -1116,7 +1140,7 @@ def run_monte_carlo(
                 seed=run_seed,
                 min_distance=miss_distance,
             )
-            entry["drawn_parameters"] = record_kwargs
+            entry["drawn_parameters"] = _json_safe(record_kwargs)
             details.append(entry)
 
     return MonteCarloSummary(
