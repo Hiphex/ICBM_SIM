@@ -79,7 +79,7 @@ For Monte Carlo experiments, `run_monte_carlo(runs, base_kwargs=...)` accepts ba
 
 ### Layered Engagement Logic
 
-Interceptor coordination now supports dependencies. For example, the default THAAD layer waits for the GBI layer to fail (decoy intercept, timeout, or 180 seconds with no kill) before it launches. You can control this by passing `depends_on="GBI"` and optionally `dependency_grace_period` when building an `InterceptorConfig`. Setting a grace period allows the next layer to launch even if the upstream interceptor is still in flight but has exceeded its allotted engagement window.
+Interceptor coordination now supports dependencies. For example, the default THAAD layer waits for the GBI layer to fail (decoy intercept, timeout, or 45 seconds with no kill) before it launches. You can control this by passing `depends_on="GBI"` and optionally `dependency_grace_period` when building an `InterceptorConfig`. Setting a grace period allows the next layer to launch even if the upstream interceptor is still in flight but has exceeded its allotted engagement window.
 
 ### Parallel Salvo Launches
 
