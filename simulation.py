@@ -1118,7 +1118,13 @@ def run_monte_carlo(
                 timeouts += 1
 
         miss_distance = _minimum_miss_distance(result)
-        if math.isfinite(miss_distance):
+        # `_minimum_miss_distance` returns `0` on a primary intercept. That detail
+        # is useful for single-run inspection, but it should not drive the Monte
+        # Carlo miss statistics. Only aggregate distances for actual misses so
+        # the median reflects how far the warhead was from the closest
+        # interceptor when it leaked through the defense rather than being
+        # dominated by perfect kills.
+        if not result.intercept_success and math.isfinite(miss_distance):
             miss_distances.append(miss_distance)
 
         for report in result.interceptor_reports.values():
