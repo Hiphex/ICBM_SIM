@@ -200,6 +200,55 @@ def _interceptor_style(config_name: str) -> Dict[str, Any]:
     return dict(base_styles.get(config_name, {}))
 
 
+def _interceptor_time_series(
+    result: SimulationResult,
+) -> Tuple[Dict[str, Tuple[List[float], List[float]]], Dict[str, Optional[int]]]:
+    """Return interceptor position histories and intercept indices.
+
+    Each interceptor is mapped to a pair of ``(xs, ys)`` lists matching the
+    sample timeline. Positions that are undefined (for example prior to
+    launch) are represented as ``math.nan`` so that downstream visualizers can
+    keep a consistent frame count. The accompanying dictionary stores the
+    index of the last sample at or before the recorded intercept time, which
+    allows plots to truncate the line once an intercept occurs while the
+    animation routines can still render the full timeline.
+    """
+
+    series: Dict[str, Tuple[List[float], List[float]]] = {}
+    intercept_indices: Dict[str, Optional[int]] = {}
+
+    for name, report in result.interceptor_reports.items():
+        xs: List[float] = []
+        ys: List[float] = []
+        for sample in result.samples:
+            pos = sample.interceptor_positions_map.get(name)
+            if pos is None:
+                xs.append(math.nan)
+                ys.append(math.nan)
+            else:
+                xs.append(pos[0])
+                ys.append(pos[1])
+        series[name] = (xs, ys)
+
+        intercept_time = report.intercept_time
+        if intercept_time is None:
+            intercept_indices[name] = None
+            continue
+
+        last_index: Optional[int] = None
+        for idx, sample in enumerate(result.samples):
+            if sample.time > intercept_time:
+                break
+            x_val = xs[idx]
+            y_val = ys[idx]
+            if math.isnan(x_val) or math.isnan(y_val):
+                continue
+            last_index = idx
+        intercept_indices[name] = last_index
+
+    return series, intercept_indices
+
+
 def _json_safe(value: Any) -> Any:
     """Convert simulation parameters to JSON-friendly structures."""
     if isinstance(value, InterceptorConfig):
@@ -1172,28 +1221,7 @@ def _plot(result: SimulationResult) -> None:
     icbm_x = [sample.icbm_position[0] for sample in result.samples]
     icbm_y = [sample.icbm_position[1] for sample in result.samples]
 
-    interceptor_paths: Dict[str, List[Optional[Vector]]] = {
-        name: [] for name in result.interceptor_reports.keys()
-    }
-    for sample in result.samples:
-        for name in interceptor_paths.keys():
-            interceptor_paths[name].append(sample.interceptor_positions_map.get(name))
-
-    # Determine the final sample index to render for each interceptor when an intercept occurs.
-    intercept_sample_indices: Dict[str, Optional[int]] = {}
-    for name, report in result.interceptor_reports.items():
-        intercept_time = report.intercept_time
-        if intercept_time is None:
-            intercept_sample_indices[name] = None
-            continue
-
-        last_index: Optional[int] = None
-        for idx, sample in enumerate(result.samples):
-            if sample.time > intercept_time:
-                break
-            if sample.interceptor_positions_map.get(name) is not None:
-                last_index = idx
-        intercept_sample_indices[name] = last_index
+    interceptor_series, intercept_sample_indices = _interceptor_time_series(result)
 
     # Track decoy trajectories by unique ID so colors remain stable even if others are removed.
     decoy_id_order: List[int] = []
@@ -1223,17 +1251,18 @@ def _plot(result: SimulationResult) -> None:
     plt.figure(figsize=(10, 5))
     plt.plot(icbm_x, icbm_y, color="#4D4D4D", linewidth=2.0, label="ICBM")
 
-    for name, positions in interceptor_paths.items():
+    for name, (xs, ys) in interceptor_series.items():
         intercept_idx = intercept_sample_indices.get(name)
+        limit = len(xs) if intercept_idx is None else intercept_idx + 1
         x_vals: List[float] = []
         y_vals: List[float] = []
-        for idx, pos in enumerate(positions):
-            if intercept_idx is not None and idx > intercept_idx:
-                break
-            if pos is None:
+        for idx in range(limit):
+            x_val = xs[idx]
+            y_val = ys[idx]
+            if math.isnan(x_val) or math.isnan(y_val):
                 continue
-            x_vals.append(pos[0])
-            y_vals.append(pos[1])
+            x_vals.append(x_val)
+            y_vals.append(y_val)
 
         if not x_vals:
             continue
@@ -1295,20 +1324,8 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
     icbm_x = [sample.icbm_position[0] for sample in result.samples]
     icbm_y = [sample.icbm_position[1] for sample in result.samples]
 
-    interceptor_names = list(result.interceptor_reports.keys())
-    interceptor_paths: Dict[str, Tuple[List[float], List[float]]] = {}
-    for name in interceptor_names:
-        xs: List[float] = []
-        ys: List[float] = []
-        for sample in result.samples:
-            pos = sample.interceptor_positions_map.get(name)
-            if pos is None:
-                xs.append(math.nan)
-                ys.append(math.nan)
-            else:
-                xs.append(pos[0])
-                ys.append(pos[1])
-        interceptor_paths[name] = (xs, ys)
+    interceptor_paths, _ = _interceptor_time_series(result)
+    interceptor_names = list(interceptor_paths.keys())
 
     decoy_id_order: List[int] = []
     for sample in result.samples:
@@ -1395,7 +1412,7 @@ def _animate(result: SimulationResult, interval_ms: int = 35) -> None:
     # Establish axis limits so trajectories are visible from the first frame.
     all_x: List[float] = [x for x in icbm_x]
     all_y: List[float] = [y for y in icbm_y]
-    for xs, ys in interceptor_paths.values():
+    for name, (xs, ys) in interceptor_paths.items():
         all_x.extend(x for x in xs if not math.isnan(x))
         all_y.extend(y for y in ys if not math.isnan(y))
     for xs, ys in decoy_paths.values():
