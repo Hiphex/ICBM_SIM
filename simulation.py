@@ -383,7 +383,7 @@ def simulate_icbm_intercept(
                 speed_cap=interceptor_speed_cap,
                 guidance_gain=max(0.88, guidance_gain * 1.18),
                 damping_gain=max(0.055, damping_gain * 1.15),
-                intercept_distance=max(intercept_distance, 50_000.0),
+                intercept_distance=max(intercept_distance, 96_000.0),
                 max_accel=interceptor_max_accel,
                 guidance_noise_std_deg=max(0.03, guidance_noise_std_deg * 0.9),
                 confusion_probability=max(0.0, min(0.15, decoy_confusion_probability * 0.5)),
