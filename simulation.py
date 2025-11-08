@@ -281,6 +281,9 @@ def simulate_icbm_intercept(
     * Configurable interceptor salvos (count and spacing) so layered defenses can
       fire parallel shots for higher kill probability.
     """
+    if dt <= 0.0:
+        raise ValueError("time step dt must be positive")
+
     if rng is None:
         rng = random.Random()
 

@@ -32,3 +32,8 @@ def test_guard_time_horizon_independent_of_dt():
         assert time == pytest.approx(target_seconds, abs=dt)
         expected_steps = math.ceil(target_seconds / dt)
         assert step_count == expected_steps
+
+
+def test_simulate_icbm_intercept_rejects_nonpositive_dt():
+    with pytest.raises(ValueError, match="time step dt must be positive"):
+        simulate_icbm_intercept(dt=0.0)
