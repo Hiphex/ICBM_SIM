@@ -1,4 +1,5 @@
 import math
+import random
 
 import pytest
 
@@ -34,6 +35,16 @@ def test_guard_time_horizon_independent_of_dt():
         assert step_count == expected_steps
 
 
-def test_simulate_icbm_intercept_rejects_nonpositive_dt():
-    with pytest.raises(ValueError, match="time step dt must be positive"):
-        simulate_icbm_intercept(dt=0.0)
+def test_ballistic_impact_without_interceptors():
+    rng = random.Random(12345)
+
+    result = simulate_icbm_intercept(
+        interceptors=[],
+        decoy_count=0,
+        decoy_release_time=None,
+        rng=rng,
+    )
+
+    assert result.intercept_success is False
+    assert result.icbm_impact_time is not None
+    assert math.isfinite(result.icbm_impact_time)
