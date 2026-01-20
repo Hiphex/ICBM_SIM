@@ -21,7 +21,7 @@ import argparse
 import math
 from dataclasses import asdict, dataclass, field
 from random import Random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import json
 import random
 import statistics
@@ -151,6 +151,19 @@ class InterceptorReport:
 
 
 @dataclass
+class DecoyState:
+    positions: List[Vector]
+    velocities: List[Vector]
+    masses: List[float]
+    drag_coefficients: List[float]
+    reference_areas: List[float]
+    ids: List[int]
+    next_id: int = 0
+    deployed: bool = False
+    released_count: int = 0
+
+
+@dataclass
 class MonteCarloSummary:
     runs: int
     successes: int
@@ -247,6 +260,440 @@ def _interceptor_time_series(
         intercept_indices[name] = last_index
 
     return series, intercept_indices
+
+
+def _snapshot_decoys(decoy_positions: List[Vector]) -> List[Vector]:
+    return [(pos[0], pos[1] if pos[1] >= 0.0 else 0.0) for pos in decoy_positions]
+
+
+# advance_icbm_state: integrates missile/decoy dynamics and triggers decoy deployment.
+# update_interceptor_states: manages interceptor launch gating, guidance, and intercept outcomes.
+# collect_samples: records per-step trajectory snapshots for analysis and plotting.
+
+
+def _deploy_decoys(
+    *,
+    time: float,
+    decoy_release_time: Optional[float],
+    decoy_count: int,
+    decoy_spread_velocity: float,
+    decoy_drag_multiplier: float,
+    decoy_mass_fraction: float,
+    warhead_mass_fraction: float,
+    warhead_drag_multiplier: float,
+    icbm_mass: float,
+    icbm_drag_coefficient: float,
+    icbm_reference_area: float,
+    icbm_pos: Vector,
+    icbm_vel: Vector,
+    decoy_state: DecoyState,
+    active_mass: float,
+    active_drag_coefficient: float,
+    active_reference_area: float,
+    interceptor_states: List[InterceptorState],
+    rng: Random,
+) -> Tuple[DecoyState, float, float, float]:
+    if (
+        decoy_state.deployed
+        or decoy_release_time is None
+        or decoy_count <= 0
+        or time < decoy_release_time
+    ):
+        return decoy_state, active_mass, active_drag_coefficient, active_reference_area
+
+    decoy_state.deployed = True
+
+    active_mass = max(1.0, icbm_mass * max(warhead_mass_fraction, 0.05))
+    active_drag_coefficient = icbm_drag_coefficient * warhead_drag_multiplier
+    active_reference_area = icbm_reference_area * warhead_drag_multiplier
+
+    decoy_state.positions = []
+    decoy_state.velocities = []
+    decoy_state.masses = []
+    decoy_state.drag_coefficients = []
+    decoy_state.reference_areas = []
+    decoy_state.ids = []
+
+    for _ in range(decoy_count):
+        orientation = normalize((rng.gauss(0.0, 1.0), rng.gauss(0.0, 1.0)))
+        if orientation == (0.0, 0.0):
+            orientation = (1.0, 0.0)
+        speed_offset = max(
+            0.0, rng.gauss(decoy_spread_velocity, max(20.0, 0.25 * decoy_spread_velocity))
+        )
+        lateral_velocity = mul(orientation, speed_offset)
+        vertical_offset = (0.0, -abs(rng.gauss(0.0, 0.2 * max(decoy_spread_velocity, 1.0))))
+        new_velocity = add(icbm_vel, add(lateral_velocity, vertical_offset))
+
+        decoy_state.positions.append(icbm_pos)
+        decoy_state.velocities.append(new_velocity)
+        decoy_state.masses.append(max(1.0, icbm_mass * max(decoy_mass_fraction, 0.01)))
+        drag_multiplier = max(decoy_drag_multiplier, 0.1)
+        decoy_state.drag_coefficients.append(icbm_drag_coefficient * drag_multiplier)
+        decoy_state.reference_areas.append(icbm_reference_area * drag_multiplier)
+        decoy_state.ids.append(decoy_state.next_id)
+        decoy_state.next_id += 1
+
+    decoy_state.released_count = len(decoy_state.positions)
+
+    if decoy_state.positions:
+        for state in interceptor_states:
+            if state.expended:
+                continue
+            if state.launched and state.position is not None:
+                confused = rng.random() < state.config.confusion_probability
+            else:
+                confused = False
+            if confused:
+                state.target_mode = "decoy"
+                state.selected_decoy_index = rng.randrange(len(decoy_state.positions))
+            else:
+                state.target_mode = "primary"
+                state.selected_decoy_index = None
+
+    return decoy_state, active_mass, active_drag_coefficient, active_reference_area
+
+
+def advance_icbm_state(
+    *,
+    time: float,
+    dt: float,
+    gravity: float,
+    wind_velocity: Vector,
+    air_density: Callable[[float], float],
+    icbm_pos: Vector,
+    icbm_vel: Vector,
+    initial_heading: Vector,
+    stage_count: int,
+    cumulative_stage_times: List[float],
+    stage_accels: List[float],
+    cumulative_pitch_angles: List[float],
+    active_mass: float,
+    active_drag_coefficient: float,
+    active_reference_area: float,
+    icbm_mass: float,
+    icbm_drag_coefficient: float,
+    icbm_reference_area: float,
+    decoy_release_time: Optional[float],
+    decoy_count: int,
+    decoy_spread_velocity: float,
+    decoy_drag_multiplier: float,
+    warhead_mass_fraction: float,
+    warhead_drag_multiplier: float,
+    decoy_mass_fraction: float,
+    decoy_state: DecoyState,
+    interceptor_states: List[InterceptorState],
+    rng: Random,
+) -> Tuple[Vector, Vector, float, float, float, DecoyState]:
+    decoy_state, active_mass, active_drag_coefficient, active_reference_area = _deploy_decoys(
+        time=time,
+        decoy_release_time=decoy_release_time,
+        decoy_count=decoy_count,
+        decoy_spread_velocity=decoy_spread_velocity,
+        decoy_drag_multiplier=decoy_drag_multiplier,
+        decoy_mass_fraction=decoy_mass_fraction,
+        warhead_mass_fraction=warhead_mass_fraction,
+        warhead_drag_multiplier=warhead_drag_multiplier,
+        icbm_mass=icbm_mass,
+        icbm_drag_coefficient=icbm_drag_coefficient,
+        icbm_reference_area=icbm_reference_area,
+        icbm_pos=icbm_pos,
+        icbm_vel=icbm_vel,
+        decoy_state=decoy_state,
+        active_mass=active_mass,
+        active_drag_coefficient=active_drag_coefficient,
+        active_reference_area=active_reference_area,
+        interceptor_states=interceptor_states,
+        rng=rng,
+    )
+
+    gravity_vec = (0.0, -gravity)
+    rel_air_velocity = sub(icbm_vel, wind_velocity)
+    rel_speed = length(rel_air_velocity)
+
+    drag_vec = (0.0, 0.0)
+    if rel_speed > 0.0 and active_mass > 0.0:
+        rho = air_density(icbm_pos[1])
+        drag_mag = (
+            0.5
+            * rho
+            * rel_speed
+            * rel_speed
+            * active_drag_coefficient
+            * active_reference_area
+            / active_mass
+        )
+        drag_vec = mul(normalize(rel_air_velocity), -drag_mag)
+
+    boost_vec = (0.0, 0.0)
+    if stage_count:
+        stage_idx = None
+        for idx, stage_end in enumerate(cumulative_stage_times):
+            if time < stage_end:
+                stage_idx = idx
+                break
+        if stage_idx is not None:
+            angle_deg = cumulative_pitch_angles[stage_idx]
+            heading_vec = rotate(initial_heading, math.radians(angle_deg))
+            heading_vec = normalize(heading_vec)
+            boost_vec = mul(heading_vec, stage_accels[stage_idx])
+
+    total_acc = add(add(gravity_vec, drag_vec), boost_vec)
+    icbm_vel = add(icbm_vel, mul(total_acc, dt))
+    icbm_pos = add(icbm_pos, mul(icbm_vel, dt))
+
+    for idx in range(len(decoy_state.positions)):
+        decoy_velocity = decoy_state.velocities[idx]
+        rel_air = sub(decoy_velocity, wind_velocity)
+        rel_speed_decoy = length(rel_air)
+        decoy_drag_vec = (0.0, 0.0)
+        decoy_mass = decoy_state.masses[idx]
+        if rel_speed_decoy > 0.0 and decoy_mass > 0.0:
+            rho = air_density(decoy_state.positions[idx][1])
+            drag_mag_decoy = (
+                0.5
+                * rho
+                * rel_speed_decoy
+                * rel_speed_decoy
+                * decoy_state.drag_coefficients[idx]
+                * decoy_state.reference_areas[idx]
+                / decoy_mass
+            )
+            decoy_drag_vec = mul(normalize(rel_air), -drag_mag_decoy)
+
+        total_decoy_acc = add((0.0, -gravity), decoy_drag_vec)
+        decoy_velocity = add(decoy_velocity, mul(total_decoy_acc, dt))
+        decoy_position = add(decoy_state.positions[idx], mul(decoy_velocity, dt))
+
+        decoy_state.velocities[idx] = decoy_velocity
+        decoy_state.positions[idx] = decoy_position
+
+    return (
+        icbm_pos,
+        icbm_vel,
+        active_mass,
+        active_drag_coefficient,
+        active_reference_area,
+        decoy_state,
+    )
+
+
+def update_interceptor_states(
+    *,
+    time: float,
+    dt: float,
+    icbm_pos: Vector,
+    interceptor_states: List[InterceptorState],
+    intercept_success: bool,
+    intercept_time: Optional[float],
+    intercept_position: Optional[Vector],
+    intercept_target_label: Optional[str],
+    decoy_state: DecoyState,
+    rng: Random,
+) -> Tuple[bool, Optional[float], Optional[Vector], Optional[str], DecoyState]:
+    target_altitude = icbm_pos[1]
+    for state in interceptor_states:
+        if state.launched or state.expended:
+            continue
+        cfg = state.config
+        if intercept_success:
+            continue
+        horiz_distance = abs(icbm_pos[0] - cfg.site[0])
+        range_ok = True
+        if cfg.engage_range_min > 0.0 and horiz_distance < cfg.engage_range_min:
+            range_ok = False
+        if cfg.engage_range_max > 0.0 and horiz_distance > cfg.engage_range_max:
+            range_ok = False
+        dependency_ready = True
+        if cfg.depends_on:
+            # Delay launch until every interceptor in the dependency layer has failed
+            # or exceeded its grace window.
+            dependency_states = [s for s in interceptor_states if s.config.name == cfg.depends_on]
+            if dependency_states:
+                if any(dep.success for dep in dependency_states):
+                    continue
+                dependency_ready = True
+                grace = max(cfg.dependency_grace_period, 0.0)
+                for dep in dependency_states:
+                    if dep.expended and not dep.success:
+                        continue
+                    if dep.launched:
+                        if grace > 0.0 and dep.launch_time is not None:
+                            if time - dep.launch_time >= grace:
+                                continue
+                        dependency_ready = False
+                        break
+                    else:
+                        if grace > 0.0 and time >= dep.planned_launch_time + grace:
+                            continue
+                        dependency_ready = False
+                        break
+            else:
+                dependency_ready = True
+        if not dependency_ready:
+            continue
+        if (
+            time >= state.planned_launch_time
+            and cfg.engage_altitude_min <= target_altitude <= cfg.engage_altitude_max
+            and range_ok
+        ):
+            state.launched = True
+            state.position = cfg.site
+            state.velocity = (0.0, 0.0)
+            state.launch_time = time
+            if decoy_state.deployed and decoy_state.positions and rng.random() < cfg.confusion_probability:
+                state.target_mode = "decoy"
+                state.selected_decoy_index = rng.randrange(len(decoy_state.positions))
+            else:
+                state.target_mode = "primary"
+                state.selected_decoy_index = None
+
+    for state in interceptor_states:
+        if not state.launched or state.expended or state.position is None or state.velocity is None:
+            continue
+
+        cfg = state.config
+
+        if cfg.max_flight_time > 0.0 and state.launch_time is not None:
+            if time - state.launch_time > cfg.max_flight_time:
+                state.expended = True
+                continue
+
+        if decoy_state.deployed and state.target_mode == "decoy" and decoy_state.positions:
+            reacquire_prob = (
+                1.0 - math.exp(-cfg.reacquisition_rate * dt) if cfg.reacquisition_rate > 0.0 else 0.0
+            )
+            if rng.random() < reacquire_prob:
+                state.target_mode = "primary"
+                state.selected_decoy_index = None
+
+        target_pos = icbm_pos
+        if state.target_mode == "decoy" and decoy_state.positions:
+            idx = state.selected_decoy_index
+            if idx is None or idx < 0 or idx >= len(decoy_state.positions):
+                idx = len(decoy_state.positions) - 1
+            if idx >= 0:
+                target_pos = decoy_state.positions[idx]
+                state.selected_decoy_index = idx
+            else:
+                state.target_mode = "primary"
+                state.selected_decoy_index = None
+                target_pos = icbm_pos
+
+        line_of_sight = sub(target_pos, state.position)
+        los_direction = normalize(line_of_sight)
+
+        if cfg.guidance_noise_std_deg > 0.0:
+            noise_angle = math.radians(rng.gauss(0.0, cfg.guidance_noise_std_deg))
+            los_direction = rotate(los_direction, noise_angle)
+            los_direction = normalize(los_direction)
+
+        desired_velocity = mul(los_direction, cfg.speed_cap)
+        guidance_acc = mul(sub(desired_velocity, state.velocity), cfg.guidance_gain)
+        damping = mul(state.velocity, cfg.damping_gain)
+        control_acc = sub(guidance_acc, damping)
+
+        acc_mag = length(control_acc)
+        if acc_mag > cfg.max_accel:
+            control_acc = mul(control_acc, cfg.max_accel / acc_mag)
+
+        state.velocity = add(state.velocity, mul(control_acc, dt))
+
+        speed = length(state.velocity)
+        if speed > cfg.speed_cap:
+            state.velocity = mul(normalize(state.velocity), cfg.speed_cap)
+
+        state.position = add(state.position, mul(state.velocity, dt))
+
+        primary_distance = length(sub(icbm_pos, state.position))
+        decoy_hit_index: Optional[int] = None
+        if decoy_state.positions and state.target_mode == "decoy":
+            for idx, decoy_position in enumerate(decoy_state.positions):
+                if length(sub(decoy_position, state.position)) <= cfg.intercept_distance:
+                    decoy_hit_index = idx
+                    break
+
+        if primary_distance <= cfg.intercept_distance:
+            intercept_success = True
+            intercept_time = time
+            intercept_position = icbm_pos
+            intercept_target_label = "primary"
+            state.success = True
+            state.expended = True
+            state.intercept_time = time
+            state.intercept_position = icbm_pos
+            state.intercept_target_label = "primary"
+            state.position = icbm_pos
+            state.velocity = (0.0, 0.0)
+            break
+        if decoy_hit_index is not None:
+            intercept_time = time
+            target_pos = (
+                decoy_state.positions[decoy_hit_index]
+                if decoy_hit_index < len(decoy_state.positions)
+                else state.position
+            )
+            intercept_position = target_pos
+            intercept_target_label = "decoy"
+            state.success = False
+            state.expended = True
+            state.intercept_time = time
+            state.intercept_position = target_pos
+            state.intercept_target_label = "decoy"
+            state.position = target_pos
+            state.velocity = (0.0, 0.0)
+            if decoy_hit_index < len(decoy_state.positions):
+                decoy_state.positions.pop(decoy_hit_index)
+                decoy_state.velocities.pop(decoy_hit_index)
+                decoy_state.masses.pop(decoy_hit_index)
+                decoy_state.drag_coefficients.pop(decoy_hit_index)
+                decoy_state.reference_areas.pop(decoy_hit_index)
+                decoy_state.ids.pop(decoy_hit_index)
+            for other_state in interceptor_states:
+                other_state.selected_decoy_index = None
+            break
+
+    return intercept_success, intercept_time, intercept_position, intercept_target_label, decoy_state
+
+
+def collect_samples(
+    *,
+    time: float,
+    icbm_pos: Vector,
+    icbm_vel: Vector,
+    interceptor_states: List[InterceptorState],
+    interceptors: Optional[List[InterceptorConfig]],
+    decoy_state: DecoyState,
+    samples: List[TrajectorySample],
+) -> None:
+    interceptor_positions_map = {state.label: state.position for state in interceptor_states}
+    interceptor_velocities_map = {state.label: state.velocity for state in interceptor_states}
+
+    default_interceptor_position = None
+    default_interceptor_velocity = None
+    if interceptors:
+        default_label = next(
+            (state.label for state in interceptor_states if state.config is interceptors[0]), None
+        )
+        if default_label is not None:
+            default_interceptor_position = interceptor_positions_map.get(default_label)
+            default_interceptor_velocity = interceptor_velocities_map.get(default_label)
+
+    decoy_snapshot = _snapshot_decoys(decoy_state.positions)
+
+    samples.append(
+        TrajectorySample(
+            time,
+            icbm_position=icbm_pos,
+            icbm_velocity=icbm_vel,
+            interceptor_position=default_interceptor_position,
+            interceptor_velocity=default_interceptor_velocity,
+            interceptor_positions_map=interceptor_positions_map,
+            interceptor_velocities_map=interceptor_velocities_map,
+            decoy_positions=decoy_snapshot,
+            decoy_ids=list(decoy_state.ids),
+        )
+    )
 
 
 def _json_safe(value: Any) -> Any:
@@ -517,21 +964,14 @@ def simulate_icbm_intercept(
     active_reference_area = icbm_reference_area
     active_mass = icbm_mass
 
-    decoy_positions: List[Vector] = []
-    decoy_velocities: List[Vector] = []
-    decoy_masses: List[float] = []
-    decoy_drag_coefficients: List[float] = []
-    decoy_reference_areas: List[float] = []
-    decoy_ids: List[int] = []
-    next_decoy_id = 0
-    decoys_deployed = False
-    released_decoy_count = 0
-
-    def snapshot_decoys() -> List[Vector]:
-        return [
-            (pos[0], pos[1] if pos[1] >= 0.0 else 0.0)
-            for pos in decoy_positions
-        ]
+    decoy_state = DecoyState(
+        positions=[],
+        velocities=[],
+        masses=[],
+        drag_coefficients=[],
+        reference_areas=[],
+        ids=[],
+    )
 
     time = 0.0
     step_count = 0
@@ -544,330 +984,79 @@ def simulate_icbm_intercept(
         max_steps = int(math.ceil(target_seconds / dt))
 
     while True:
-        if (
-            not decoys_deployed
-            and decoy_release_time is not None
-            and decoy_count > 0
-            and time >= decoy_release_time
-        ):
-            decoys_deployed = True
+        (
+            icbm_pos,
+            icbm_vel,
+            active_mass,
+            active_drag_coefficient,
+            active_reference_area,
+            decoy_state,
+        ) = advance_icbm_state(
+            time=time,
+            dt=dt,
+            gravity=gravity,
+            wind_velocity=wind_velocity,
+            air_density=air_density,
+            icbm_pos=icbm_pos,
+            icbm_vel=icbm_vel,
+            initial_heading=initial_heading,
+            stage_count=stage_count,
+            cumulative_stage_times=cumulative_stage_times,
+            stage_accels=stage_accels,
+            cumulative_pitch_angles=cumulative_pitch_angles,
+            active_mass=active_mass,
+            active_drag_coefficient=active_drag_coefficient,
+            active_reference_area=active_reference_area,
+            icbm_mass=icbm_mass,
+            icbm_drag_coefficient=icbm_drag_coefficient,
+            icbm_reference_area=icbm_reference_area,
+            decoy_release_time=decoy_release_time,
+            decoy_count=decoy_count,
+            decoy_spread_velocity=decoy_spread_velocity,
+            decoy_drag_multiplier=decoy_drag_multiplier,
+            warhead_mass_fraction=warhead_mass_fraction,
+            warhead_drag_multiplier=warhead_drag_multiplier,
+            decoy_mass_fraction=decoy_mass_fraction,
+            decoy_state=decoy_state,
+            interceptor_states=interceptor_states,
+            rng=rng,
+        )
 
-            active_mass = max(1.0, icbm_mass * max(warhead_mass_fraction, 0.05))
-            active_drag_coefficient = icbm_drag_coefficient * warhead_drag_multiplier
-            active_reference_area = icbm_reference_area * warhead_drag_multiplier
-
-            decoy_positions = []
-            decoy_velocities = []
-            decoy_masses = []
-            decoy_drag_coefficients = []
-            decoy_reference_areas = []
-            decoy_ids = []
-
-            for _ in range(decoy_count):
-                orientation = normalize((rng.gauss(0.0, 1.0), rng.gauss(0.0, 1.0)))
-                if orientation == (0.0, 0.0):
-                    orientation = (1.0, 0.0)
-                speed_offset = max(
-                    0.0, rng.gauss(decoy_spread_velocity, max(20.0, 0.25 * decoy_spread_velocity))
-                )
-                lateral_velocity = mul(orientation, speed_offset)
-                vertical_offset = (0.0, -abs(rng.gauss(0.0, 0.2 * max(decoy_spread_velocity, 1.0))))
-                new_velocity = add(icbm_vel, add(lateral_velocity, vertical_offset))
-
-                decoy_positions.append(icbm_pos)
-                decoy_velocities.append(new_velocity)
-                decoy_masses.append(max(1.0, icbm_mass * max(decoy_mass_fraction, 0.01)))
-                drag_multiplier = max(decoy_drag_multiplier, 0.1)
-                decoy_drag_coefficients.append(icbm_drag_coefficient * drag_multiplier)
-                decoy_reference_areas.append(icbm_reference_area * drag_multiplier)
-                decoy_ids.append(next_decoy_id)
-                next_decoy_id += 1
-
-            released_decoy_count = len(decoy_positions)
-
-            if decoy_positions:
-                for state in interceptor_states:
-                    if state.expended:
-                        continue
-                    if state.launched and state.position is not None:
-                        confused = rng.random() < state.config.confusion_probability
-                    else:
-                        confused = False
-                    if confused:
-                        state.target_mode = "decoy"
-                        state.selected_decoy_index = rng.randrange(len(decoy_positions))
-                    else:
-                        state.target_mode = "primary"
-                        state.selected_decoy_index = None
-
-        gravity_vec = (0.0, -gravity)
-        rel_air_velocity = sub(icbm_vel, wind_velocity)
-        rel_speed = length(rel_air_velocity)
-
-        drag_vec = (0.0, 0.0)
-        if rel_speed > 0.0 and active_mass > 0.0:
-            rho = air_density(icbm_pos[1])
-            drag_mag = (
-                0.5
-                * rho
-                * rel_speed
-                * rel_speed
-                * active_drag_coefficient
-                * active_reference_area
-                / active_mass
-            )
-            drag_vec = mul(normalize(rel_air_velocity), -drag_mag)
-
-        boost_vec = (0.0, 0.0)
-        if stage_count:
-            stage_idx = None
-            for idx, stage_end in enumerate(cumulative_stage_times):
-                if time < stage_end:
-                    stage_idx = idx
-                    break
-            if stage_idx is not None:
-                angle_deg = cumulative_pitch_angles[stage_idx]
-                heading_vec = rotate(initial_heading, math.radians(angle_deg))
-                heading_vec = normalize(heading_vec)
-                boost_vec = mul(heading_vec, stage_accels[stage_idx])
-
-        total_acc = add(add(gravity_vec, drag_vec), boost_vec)
-        icbm_vel = add(icbm_vel, mul(total_acc, dt))
-        icbm_pos = add(icbm_pos, mul(icbm_vel, dt))
-
-        for idx in range(len(decoy_positions)):
-            decoy_velocity = decoy_velocities[idx]
-            rel_air = sub(decoy_velocity, wind_velocity)
-            rel_speed_decoy = length(rel_air)
-            decoy_drag_vec = (0.0, 0.0)
-            decoy_mass = decoy_masses[idx]
-            if rel_speed_decoy > 0.0 and decoy_mass > 0.0:
-                rho = air_density(decoy_positions[idx][1])
-                drag_mag_decoy = (
-                    0.5
-                    * rho
-                    * rel_speed_decoy
-                    * rel_speed_decoy
-                    * decoy_drag_coefficients[idx]
-                    * decoy_reference_areas[idx]
-                    / decoy_mass
-                )
-                decoy_drag_vec = mul(normalize(rel_air), -drag_mag_decoy)
-
-            total_decoy_acc = add((0.0, -gravity), decoy_drag_vec)
-            decoy_velocity = add(decoy_velocity, mul(total_decoy_acc, dt))
-            decoy_position = add(decoy_positions[idx], mul(decoy_velocity, dt))
-
-            decoy_velocities[idx] = decoy_velocity
-            decoy_positions[idx] = decoy_position
-
-        target_altitude = icbm_pos[1]
-        for state in interceptor_states:
-            if state.launched or state.expended:
-                continue
-            cfg = state.config
-            if intercept_success:
-                continue
-            horiz_distance = abs(icbm_pos[0] - cfg.site[0])
-            range_ok = True
-            if cfg.engage_range_min > 0.0 and horiz_distance < cfg.engage_range_min:
-                range_ok = False
-            if cfg.engage_range_max > 0.0 and horiz_distance > cfg.engage_range_max:
-                range_ok = False
-            dependency_ready = True
-            if cfg.depends_on:
-                # Delay launch until every interceptor in the dependency layer has failed
-                # or exceeded its grace window.
-                dependency_states = [
-                    s for s in interceptor_states if s.config.name == cfg.depends_on
-                ]
-                if dependency_states:
-                    if any(dep.success for dep in dependency_states):
-                        continue
-                    dependency_ready = True
-                    grace = max(cfg.dependency_grace_period, 0.0)
-                    for dep in dependency_states:
-                        if dep.expended and not dep.success:
-                            continue
-                        if dep.launched:
-                            if grace > 0.0 and dep.launch_time is not None:
-                                if time - dep.launch_time >= grace:
-                                    continue
-                            dependency_ready = False
-                            break
-                        else:
-                            if grace > 0.0 and time >= dep.planned_launch_time + grace:
-                                continue
-                            dependency_ready = False
-                            break
-                else:
-                    dependency_ready = True
-            if not dependency_ready:
-                continue
-            if (
-                time >= state.planned_launch_time
-                and cfg.engage_altitude_min <= target_altitude <= cfg.engage_altitude_max
-                and range_ok
-            ):
-                state.launched = True
-                state.position = cfg.site
-                state.velocity = (0.0, 0.0)
-                state.launch_time = time
-                if decoys_deployed and decoy_positions and rng.random() < cfg.confusion_probability:
-                    state.target_mode = "decoy"
-                    state.selected_decoy_index = rng.randrange(len(decoy_positions))
-                else:
-                    state.target_mode = "primary"
-                    state.selected_decoy_index = None
-
-        for state in interceptor_states:
-            if (
-                not state.launched
-                or state.expended
-                or state.position is None
-                or state.velocity is None
-            ):
-                continue
-
-            cfg = state.config
-
-            if cfg.max_flight_time > 0.0 and state.launch_time is not None:
-                if time - state.launch_time > cfg.max_flight_time:
-                    state.expended = True
-                    continue
-
-            if decoys_deployed and state.target_mode == "decoy" and decoy_positions:
-                reacquire_prob = (
-                    1.0 - math.exp(-cfg.reacquisition_rate * dt)
-                    if cfg.reacquisition_rate > 0.0
-                    else 0.0
-                )
-                if rng.random() < reacquire_prob:
-                    state.target_mode = "primary"
-                    state.selected_decoy_index = None
-
-            target_pos = icbm_pos
-            if state.target_mode == "decoy" and decoy_positions:
-                idx = state.selected_decoy_index
-                if idx is None or idx < 0 or idx >= len(decoy_positions):
-                    idx = len(decoy_positions) - 1
-                if idx >= 0:
-                    target_pos = decoy_positions[idx]
-                    state.selected_decoy_index = idx
-                else:
-                    state.target_mode = "primary"
-                    state.selected_decoy_index = None
-                    target_pos = icbm_pos
-
-            line_of_sight = sub(target_pos, state.position)
-            los_direction = normalize(line_of_sight)
-
-            if cfg.guidance_noise_std_deg > 0.0:
-                noise_angle = math.radians(rng.gauss(0.0, cfg.guidance_noise_std_deg))
-                los_direction = rotate(los_direction, noise_angle)
-                los_direction = normalize(los_direction)
-
-            desired_velocity = mul(los_direction, cfg.speed_cap)
-            guidance_acc = mul(sub(desired_velocity, state.velocity), cfg.guidance_gain)
-            damping = mul(state.velocity, cfg.damping_gain)
-            control_acc = sub(guidance_acc, damping)
-
-            acc_mag = length(control_acc)
-            if acc_mag > cfg.max_accel:
-                control_acc = mul(control_acc, cfg.max_accel / acc_mag)
-
-            state.velocity = add(state.velocity, mul(control_acc, dt))
-
-            speed = length(state.velocity)
-            if speed > cfg.speed_cap:
-                state.velocity = mul(normalize(state.velocity), cfg.speed_cap)
-
-            state.position = add(state.position, mul(state.velocity, dt))
-
-            primary_distance = length(sub(icbm_pos, state.position))
-            decoy_hit_index: Optional[int] = None
-            if decoy_positions and state.target_mode == "decoy":
-                for idx, decoy_position in enumerate(decoy_positions):
-                    if length(sub(decoy_position, state.position)) <= cfg.intercept_distance:
-                        decoy_hit_index = idx
-                        break
-
-            if primary_distance <= cfg.intercept_distance:
-                intercept_success = True
-                intercept_time = time
-                intercept_position = icbm_pos
-                intercept_target_label = "primary"
-                state.success = True
-                state.expended = True
-                state.intercept_time = time
-                state.intercept_position = icbm_pos
-                state.intercept_target_label = "primary"
-                state.position = icbm_pos
-                state.velocity = (0.0, 0.0)
-                break
-            if decoy_hit_index is not None:
-                intercept_time = time
-                target_pos = decoy_positions[decoy_hit_index] if decoy_hit_index < len(decoy_positions) else state.position
-                intercept_position = target_pos
-                intercept_target_label = "decoy"
-                state.success = False
-                state.expended = True
-                state.intercept_time = time
-                state.intercept_position = target_pos
-                state.intercept_target_label = "decoy"
-                state.position = target_pos
-                state.velocity = (0.0, 0.0)
-                if decoy_hit_index < len(decoy_positions):
-                    decoy_positions.pop(decoy_hit_index)
-                    decoy_velocities.pop(decoy_hit_index)
-                    decoy_masses.pop(decoy_hit_index)
-                    decoy_drag_coefficients.pop(decoy_hit_index)
-                    decoy_reference_areas.pop(decoy_hit_index)
-                    decoy_ids.pop(decoy_hit_index)
-                for other_state in interceptor_states:
-                    other_state.selected_decoy_index = None
-                break
+        (
+            intercept_success,
+            intercept_time,
+            intercept_position,
+            intercept_target_label,
+            decoy_state,
+        ) = update_interceptor_states(
+            time=time,
+            dt=dt,
+            icbm_pos=icbm_pos,
+            interceptor_states=interceptor_states,
+            intercept_success=intercept_success,
+            intercept_time=intercept_time,
+            intercept_position=intercept_position,
+            intercept_target_label=intercept_target_label,
+            decoy_state=decoy_state,
+            rng=rng,
+        )
 
         if icbm_pos[1] < 0.0:
             icbm_pos = (icbm_pos[0], 0.0)
 
-        for idx, pos in enumerate(decoy_positions):
+        for idx, pos in enumerate(decoy_state.positions):
             if pos[1] < 0.0:
-                decoy_positions[idx] = (pos[0], 0.0)
-                decoy_velocities[idx] = (decoy_velocities[idx][0], 0.0)
+                decoy_state.positions[idx] = (pos[0], 0.0)
+                decoy_state.velocities[idx] = (decoy_state.velocities[idx][0], 0.0)
 
-        interceptor_positions_map = {
-            state.label: state.position for state in interceptor_states
-        }
-        interceptor_velocities_map = {
-            state.label: state.velocity for state in interceptor_states
-        }
-
-        default_interceptor_position = None
-        default_interceptor_velocity = None
-        if interceptors:
-            default_label = next(
-                (state.label for state in interceptor_states if state.config is interceptors[0]),
-                None,
-            )
-            if default_label is not None:
-                default_interceptor_position = interceptor_positions_map.get(default_label)
-                default_interceptor_velocity = interceptor_velocities_map.get(default_label)
-
-        decoy_snapshot = snapshot_decoys()
-
-        samples.append(
-            TrajectorySample(
-                time,
-                icbm_position=icbm_pos,
-                icbm_velocity=icbm_vel,
-                interceptor_position=default_interceptor_position,
-                interceptor_velocity=default_interceptor_velocity,
-                interceptor_positions_map=interceptor_positions_map,
-                interceptor_velocities_map=interceptor_velocities_map,
-                decoy_positions=decoy_snapshot,
-                decoy_ids=list(decoy_ids),
-            )
+        collect_samples(
+            time=time,
+            icbm_pos=icbm_pos,
+            icbm_vel=icbm_vel,
+            interceptor_states=interceptor_states,
+            interceptors=interceptors,
+            decoy_state=decoy_state,
+            samples=samples,
         )
 
         if intercept_success:
@@ -887,7 +1076,7 @@ def simulate_icbm_intercept(
                 "Check parameters for runaway conditions or supply max_time."
             )
 
-    parameter_record["decoys_deployed"] = released_decoy_count
+    parameter_record["decoys_deployed"] = decoy_state.released_count
     parameter_record["warhead_active_mass"] = active_mass
     parameter_record["warhead_active_drag_coefficient"] = active_drag_coefficient
     parameter_record["warhead_active_reference_area"] = active_reference_area
@@ -914,7 +1103,7 @@ def simulate_icbm_intercept(
         icbm_impact_time=icbm_impact_time,
         samples=samples,
         intercept_target_label=intercept_target_label,
-        decoy_count=released_decoy_count,
+        decoy_count=decoy_state.released_count,
         parameters=parameter_record,
         interceptor_reports=interceptor_reports,
     )
