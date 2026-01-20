@@ -89,6 +89,7 @@ class SimulationResult:
     icbm_impact_time: Optional[float]
     samples: List[TrajectorySample]
     intercept_target_label: Optional[str]
+    decoy_intercepts: List[Tuple[float, Vector, str]]
     decoy_count: int
     parameters: Dict[str, Any]
     interceptor_reports: Dict[str, "InterceptorReport"]
@@ -488,6 +489,7 @@ def update_interceptor_states(
     intercept_time: Optional[float],
     intercept_position: Optional[Vector],
     intercept_target_label: Optional[str],
+    decoy_intercepts: List[Tuple[float, Vector, str]],
     decoy_state: DecoyState,
     rng: Random,
 ) -> Tuple[bool, Optional[float], Optional[Vector], Optional[str], DecoyState]:
@@ -629,14 +631,12 @@ def update_interceptor_states(
             state.velocity = (0.0, 0.0)
             break
         if decoy_hit_index is not None:
-            intercept_time = time
             target_pos = (
                 decoy_state.positions[decoy_hit_index]
                 if decoy_hit_index < len(decoy_state.positions)
                 else state.position
             )
-            intercept_position = target_pos
-            intercept_target_label = "decoy"
+            decoy_intercepts.append((time, target_pos, state.label))
             state.success = False
             state.expended = True
             state.intercept_time = time
@@ -966,6 +966,7 @@ def simulate_icbm_intercept(
     intercept_position: Optional[Vector] = None
     icbm_impact_time: Optional[float] = None
     intercept_target_label: Optional[str] = None
+    decoy_intercepts: List[Tuple[float, Vector, str]] = []
 
     active_drag_coefficient = icbm_drag_coefficient
     active_reference_area = icbm_reference_area
@@ -1044,6 +1045,7 @@ def simulate_icbm_intercept(
             intercept_time=intercept_time,
             intercept_position=intercept_position,
             intercept_target_label=intercept_target_label,
+            decoy_intercepts=decoy_intercepts,
             decoy_state=decoy_state,
             rng=rng,
         )
@@ -1110,6 +1112,7 @@ def simulate_icbm_intercept(
         icbm_impact_time=icbm_impact_time,
         samples=samples,
         intercept_target_label=intercept_target_label,
+        decoy_intercepts=decoy_intercepts,
         decoy_count=decoy_state.released_count,
         parameters=parameter_record,
         interceptor_reports=interceptor_reports,
@@ -1154,6 +1157,14 @@ def _result_to_entry(
         "intercept_time": result.intercept_time,
         "impact_time": result.icbm_impact_time,
         "decoy_count": result.decoy_count,
+        "decoy_intercepts": [
+            {
+                "time": time,
+                "position": list(position),
+                "interceptor": interceptor_name,
+            }
+            for time, position, interceptor_name in result.decoy_intercepts
+        ],
         "intercept_position": result.intercept_position,
         "min_primary_distance": min_distance,
         "parameters": dict(result.parameters),
@@ -1177,6 +1188,16 @@ def _result_to_entry(
 
 
 def _summarize(result: SimulationResult) -> str:
+    decoy_events = sorted(result.decoy_intercepts, key=lambda entry: entry[0])
+    decoy_note = None
+    if decoy_events:
+        decoy_time, decoy_position, decoy_interceptor = decoy_events[0]
+        dx, dy = decoy_position
+        decoy_prefix = f"{decoy_interceptor} interceptor" if decoy_interceptor else "Interceptor"
+        decoy_note = (
+            f"{decoy_prefix} collided with a decoy at t={decoy_time:6.1f}s "
+            f"over position ({dx:,.0f} m, {dy:,.0f} m)"
+        )
     if result.intercept_success and result.intercept_time is not None:
         x, y = result.intercept_position or (0.0, 0.0)
         interceptor_name = None
@@ -1185,29 +1206,26 @@ def _summarize(result: SimulationResult) -> str:
                 interceptor_name = name
                 break
         prefix = f"{interceptor_name} interceptor" if interceptor_name else "Interceptor"
-        return (
+        primary_message = (
             f"{prefix} achieved lock at t={result.intercept_time:6.1f}s "
             f"over position ({x:,.0f} m, {y:,.0f} m)."
         )
-
-    if result.intercept_time is not None and result.intercept_target_label == "decoy":
-        x, y = result.intercept_position or (0.0, 0.0)
-        interceptor_name = None
-        for name, report in result.interceptor_reports.items():
-            if report.target_label == "decoy" and report.intercept_time == result.intercept_time:
-                interceptor_name = name
-                break
-        prefix = f"{interceptor_name} interceptor" if interceptor_name else "Interceptor"
-        return (
-            f"{prefix} collided with a decoy at t={result.intercept_time:6.1f}s "
-            f"over position ({x:,.0f} m, {y:,.0f} m); primary warhead continued."
-        )
+        if decoy_note:
+            return f"{primary_message} Earlier, {decoy_note}."
+        return primary_message
 
     if result.icbm_impact_time is not None:
+        if decoy_note:
+            return (
+                f"{decoy_note}; primary warhead impacted at t={result.icbm_impact_time:6.1f}s."
+            )
         return (
             "Interceptor failed to engage before impact. "
             f"ICBM reached ground at t={result.icbm_impact_time:6.1f}s."
         )
+
+    if decoy_note:
+        return f"{decoy_note}; primary warhead continued."
 
     return "Simulation ended without intercept or ground impact (timeout)."
 
