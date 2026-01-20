@@ -134,7 +134,7 @@ class InterceptorState:
     intercept_target_label: Optional[str] = None
     success: bool = False
     target_mode: str = "primary"
-    selected_decoy_index: Optional[int] = None
+    selected_decoy_id: Optional[int] = None
 
 
 @dataclass
@@ -346,10 +346,10 @@ def _deploy_decoys(
                 confused = False
             if confused:
                 state.target_mode = "decoy"
-                state.selected_decoy_index = rng.randrange(len(decoy_state.positions))
+                state.selected_decoy_id = rng.choice(decoy_state.ids)
             else:
                 state.target_mode = "primary"
-                state.selected_decoy_index = None
+                state.selected_decoy_id = None
 
     return decoy_state, active_mass, active_drag_coefficient, active_reference_area
 
@@ -543,10 +543,10 @@ def update_interceptor_states(
             state.launch_time = time
             if decoy_state.deployed and decoy_state.positions and rng.random() < cfg.confusion_probability:
                 state.target_mode = "decoy"
-                state.selected_decoy_index = rng.randrange(len(decoy_state.positions))
+                state.selected_decoy_id = rng.choice(decoy_state.ids)
             else:
                 state.target_mode = "primary"
-                state.selected_decoy_index = None
+                state.selected_decoy_id = None
 
     for state in interceptor_states:
         if not state.launched or state.expended or state.position is None or state.velocity is None:
@@ -565,19 +565,21 @@ def update_interceptor_states(
             )
             if rng.random() < reacquire_prob:
                 state.target_mode = "primary"
-                state.selected_decoy_index = None
+                state.selected_decoy_id = None
 
         target_pos = icbm_pos
         if state.target_mode == "decoy" and decoy_state.positions:
-            idx = state.selected_decoy_index
-            if idx is None or idx < 0 or idx >= len(decoy_state.positions):
-                idx = len(decoy_state.positions) - 1
-            if idx >= 0:
-                target_pos = decoy_state.positions[idx]
-                state.selected_decoy_index = idx
+            id_to_pos = dict(zip(decoy_state.ids, decoy_state.positions))
+            decoy_id = state.selected_decoy_id
+            if decoy_id in id_to_pos:
+                target_pos = id_to_pos[decoy_id]
+            elif decoy_state.ids:
+                fallback_id = decoy_state.ids[-1]
+                target_pos = id_to_pos[fallback_id]
+                state.selected_decoy_id = fallback_id
             else:
                 state.target_mode = "primary"
-                state.selected_decoy_index = None
+                state.selected_decoy_id = None
                 target_pos = icbm_pos
 
         line_of_sight = sub(target_pos, state.position)
@@ -642,6 +644,9 @@ def update_interceptor_states(
             state.intercept_target_label = "decoy"
             state.position = target_pos
             state.velocity = (0.0, 0.0)
+            removed_decoy_id: Optional[int] = None
+            if decoy_hit_index < len(decoy_state.ids):
+                removed_decoy_id = decoy_state.ids[decoy_hit_index]
             if decoy_hit_index < len(decoy_state.positions):
                 decoy_state.positions.pop(decoy_hit_index)
                 decoy_state.velocities.pop(decoy_hit_index)
@@ -649,8 +654,10 @@ def update_interceptor_states(
                 decoy_state.drag_coefficients.pop(decoy_hit_index)
                 decoy_state.reference_areas.pop(decoy_hit_index)
                 decoy_state.ids.pop(decoy_hit_index)
-            for other_state in interceptor_states:
-                other_state.selected_decoy_index = None
+            if removed_decoy_id is not None:
+                for other_state in interceptor_states:
+                    if other_state.selected_decoy_id == removed_decoy_id:
+                        other_state.selected_decoy_id = None
             break
 
     return intercept_success, intercept_time, intercept_position, intercept_target_label, decoy_state
